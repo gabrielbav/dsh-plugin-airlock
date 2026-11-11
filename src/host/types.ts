@@ -1,5 +1,5 @@
 /** Airlock configuration, settings and scanner extension types. */
-import type { SecurityFinding, SecuritySeverity } from './dsh.ts'
+import type { InstallGateFinding, InstallGateSeverity } from './dsh.ts'
 import type { Inventory } from './engine/quarantine.ts'
 
 /** The scanners Airlock ships adapters for. */
@@ -41,12 +41,12 @@ export interface AirlockPolicy {
   /** A score below this, counting package-content findings only, blocks; dependency advisories block only at `dependencyBlockSeverity`. */
   readonly blockScore: number
   /** A package-content finding at or above this severity blocks. */
-  readonly blockSeverity: SecuritySeverity
+  readonly blockSeverity: InstallGateSeverity
   /** A dependency vulnerability at or above this severity blocks. */
-  readonly dependencyBlockSeverity: SecuritySeverity
+  readonly dependencyBlockSeverity: InstallGateSeverity
   /** Any finding at or above this severity requires review. */
-  readonly reviewSeverity: SecuritySeverity
-  readonly weights: Readonly<Record<SecuritySeverity, number>>
+  readonly reviewSeverity: InstallGateSeverity
+  readonly weights: Readonly<Record<InstallGateSeverity, number>>
   readonly dependencyWeight: number
   /** Without the LLM analyzers a package cannot pass; it is reviewed at best. */
   readonly requireLlm: boolean
@@ -100,7 +100,7 @@ export interface ScannerOutcome {
 }
 
 /** A finding with the facts scoring needs. */
-export interface ScannedFinding extends SecurityFinding {
+export interface ScannedFinding extends InstallGateFinding {
   /** Dependency vulnerabilities score and block on their own thresholds. */
   readonly dependency: boolean
   /** Equal keys from different scanners count once. */

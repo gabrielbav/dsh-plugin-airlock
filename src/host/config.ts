@@ -2,12 +2,12 @@
  * Configuration: defaults, the Standard Schema validator Cordis applies to the `cordis.yml` row, validation of the
  * settings the person saves, and their merge into the effective configuration.
  */
-import type { SecuritySeverity } from './dsh.ts'
+import type { InstallGateSeverity } from './dsh.ts'
 import {
   BUILTIN_SCANNERS, type AirlockConfig, type AirlockSettings, type BuiltinScannerId, type CustomScanner, type ScannerConfig,
 } from './types.ts'
 
-const SEVERITIES: readonly SecuritySeverity[] = ['critical', 'high', 'medium', 'low', 'info']
+const SEVERITIES: readonly InstallGateSeverity[] = ['critical', 'high', 'medium', 'low', 'info']
 
 const DEFAULT_COMMANDS: Readonly<Record<BuiltinScannerId, string>> = {
   'cisco-skill-scanner': 'skill-scanner',
@@ -85,10 +85,10 @@ function num(value: unknown, fallback: number, path: string, min: number, max = 
   return value
 }
 
-function severity(value: unknown, fallback: SecuritySeverity, path: string): SecuritySeverity {
+function severity(value: unknown, fallback: InstallGateSeverity, path: string): InstallGateSeverity {
   if (value === undefined) return fallback
-  if (!SEVERITIES.includes(value as SecuritySeverity)) throw new ConfigError(path, `expected one of ${SEVERITIES.join(', ')}`)
-  return value as SecuritySeverity
+  if (!SEVERITIES.includes(value as InstallGateSeverity)) throw new ConfigError(path, `expected one of ${SEVERITIES.join(', ')}`)
+  return value as InstallGateSeverity
 }
 
 function strings(value: unknown, fallback: readonly string[], path: string): readonly string[] {

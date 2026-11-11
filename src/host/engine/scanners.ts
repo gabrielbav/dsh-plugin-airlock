@@ -5,7 +5,7 @@
 import { existsSync } from 'node:fs'
 import { readFile } from 'node:fs/promises'
 import { join, relative } from 'node:path'
-import type { SecuritySeverity } from '../dsh.ts'
+import type { InstallGateSeverity } from '../dsh.ts'
 import type { AirlockConfig, BuiltinScannerId, CustomScanner, ScanContext, ScannedFinding, ScannerOutcome } from '../types.ts'
 import { runScanner, type RunResult } from './runner.ts'
 
@@ -21,7 +21,7 @@ function clip(text: string): string {
  * @param value Scanner severity.
  * @returns Normalized severity.
  */
-export function severityOf(value: unknown): SecuritySeverity {
+export function severityOf(value: unknown): InstallGateSeverity {
   switch (String(value).toLowerCase()) {
     case 'critical': return 'critical'
     case 'high': return 'high'
@@ -37,7 +37,7 @@ export function severityOf(value: unknown): SecuritySeverity {
  * @param score OSV `max_severity`, such as `7.5`; empty when the advisory has none.
  * @returns Normalized severity; an advisory without a score reads as `medium`.
  */
-export function cvssSeverity(score: string | undefined): SecuritySeverity {
+export function cvssSeverity(score: string | undefined): InstallGateSeverity {
   const value = Number.parseFloat(score ?? '')
   if (Number.isNaN(value)) return 'medium'
   return value >= 9 ? 'critical' : value >= 7 ? 'high' : value >= 4 ? 'medium' : value > 0 ? 'low' : 'info'
@@ -108,7 +108,7 @@ async function ciscoSkillScanner(ctx: ScanContext): Promise<ScannerOutcome> {
         const line = typeof finding.line_number === 'number' ? finding.line_number : undefined
         const ruleId = text(finding.rule_id)
         findings.push({
-          scanner: 'cisco-skill-scanner', severity: severityOf(finding.severity), category: text(finding.category) ?? 'unknown',
+          source: 'cisco-skill-scanner', severity: severityOf(finding.severity), category: text(finding.category) ?? 'unknown',
           title: clip(text(finding.title) ?? text(finding.description) ?? 'Finding'),
           ...ruleId === undefined ? {} : { ruleId }, ...file === '' ? {} : { file }, ...line === undefined ? {} : { line },
           dependency: false, dedupeKey: `cisco-skill:${file}:${ruleId ?? ''}:${line ?? ''}:${text(finding.title) ?? ''}`,
@@ -143,7 +143,7 @@ async function skillscan(ctx: ScanContext): Promise<ScannerOutcome> {
       const line = typeof finding.line === 'number' ? finding.line : undefined
       const message = text(finding.message) ?? 'Finding'
       findings.push({
-        scanner: 'skillscan', severity: severityOf(finding.severity), category: text(finding.analyzer) ?? 'unknown',
+        source: 'skillscan', severity: severityOf(finding.severity), category: text(finding.analyzer) ?? 'unknown',
         title: clip(message), file: file.label, ...line === undefined ? {} : { line },
         dependency: false, dedupeKey: `skillscan:${file.label}:${message}:${text(finding.evidence) ?? ''}`,
       })
@@ -178,7 +178,7 @@ async function ciscoMcpScanner(ctx: ScanContext): Promise<ScannerOutcome> {
         const tool = text(result.tool_name) ?? '?'
         const threats = list(analysis.threat_names).filter(name => typeof name === 'string').join(', ')
         findings.push({
-          scanner: 'cisco-mcp-scanner', severity: severityOf(analysis.severity), category: threats === '' ? analyzer : threats.toLowerCase(),
+          source: 'cisco-mcp-scanner', severity: severityOf(analysis.severity), category: threats === '' ? analyzer : threats.toLowerCase(),
           title: clip(`Tool "${tool}": ${text(analysis.threat_summary) ?? threats}`), ruleId: analyzer, file,
           dependency: false, dedupeKey: `mcp:${file}:${tool}:${analyzer}`,
         })
@@ -218,7 +218,7 @@ async function osvScanner(ctx: ScanContext): Promise<ScannerOutcome> {
         const aliases = [...ids, ...list(group.aliases).filter((id): id is string => typeof id === 'string')]
         const cve = aliases.find(id => id.startsWith('CVE-')) ?? first
         findings.push({
-          scanner: 'osv-scanner', severity: cvssSeverity(text(group.max_severity)), category: 'vulnerability',
+          source: 'osv-scanner', severity: cvssSeverity(text(group.max_severity)), category: 'vulnerability',
           title: clip(`${name}: ${first}${text(vuln.summary) === undefined ? '' : ` ${text(vuln.summary)}`}`), ruleId: first,
           file: 'pnpm-lock.yaml', dependency: true, dedupeKey: `vuln:${name}:${cve}`,
         })
@@ -253,7 +253,7 @@ async function trivy(ctx: ScanContext): Promise<ScannerOutcome> {
         const name = `${text(vuln.PkgName) ?? '?'}@${text(vuln.InstalledVersion) ?? '?'}`
         const id = text(vuln.VulnerabilityID) ?? '?'
         findings.push({
-          scanner: 'trivy', severity: severityOf(vuln.Severity), category: 'vulnerability',
+          source: 'trivy', severity: severityOf(vuln.Severity), category: 'vulnerability',
           title: clip(`${name}: ${id}${text(vuln.Title) === undefined ? '' : ` ${text(vuln.Title)}`}`), ruleId: id,
           file: 'pnpm-lock.yaml', dependency: true, dedupeKey: `vuln:${name}:${id}`,
         })
@@ -263,7 +263,7 @@ async function trivy(ctx: ScanContext): Promise<ScannerOutcome> {
         const line = typeof secret.StartLine === 'number' ? secret.StartLine : undefined
         const ruleId = text(secret.RuleID)
         findings.push({
-          scanner: 'trivy', severity: severityOf(secret.Severity), category: 'secret',
+          source: 'trivy', severity: severityOf(secret.Severity), category: 'secret',
           title: clip(`Embedded secret: ${text(secret.Title) ?? ruleId ?? 'credential'}`), ...ruleId === undefined ? {} : { ruleId },
           file: target, ...line === undefined ? {} : { line }, dependency: false, dedupeKey: `secret:${target}:${line ?? ''}`,
         })
@@ -272,7 +272,7 @@ async function trivy(ctx: ScanContext): Promise<ScannerOutcome> {
         const misconfig = record(item)
         const id = text(misconfig.ID) ?? text(misconfig.AVDID)
         findings.push({
-          scanner: 'trivy', severity: severityOf(misconfig.Severity), category: 'misconfiguration',
+          source: 'trivy', severity: severityOf(misconfig.Severity), category: 'misconfiguration',
           title: clip(text(misconfig.Title) ?? text(misconfig.Message) ?? 'Misconfiguration'), ...id === undefined ? {} : { ruleId: id },
           file: target, dependency: false, dedupeKey: `misconfig:${target}:${id ?? ''}`,
         })
@@ -299,7 +299,7 @@ async function gitleaks(ctx: ScanContext): Promise<ScannerOutcome> {
     const line = typeof leak.StartLine === 'number' ? leak.StartLine : undefined
     const ruleId = text(leak.RuleID)
     findings.push({
-      scanner: 'gitleaks', severity: 'high', category: 'secret',
+      source: 'gitleaks', severity: 'high', category: 'secret',
       title: clip(`Embedded secret: ${text(leak.Description) ?? ruleId ?? 'credential'}`), ...ruleId === undefined ? {} : { ruleId },
       file, ...line === undefined ? {} : { line }, dependency: false, dedupeKey: `secret:${file}:${line ?? ''}`,
     })
@@ -318,7 +318,7 @@ export const SCANNERS: Readonly<Record<BuiltinScannerId, (ctx: ScanContext) => P
 }
 
 /** SARIF `level` to the normalized scale, used when a result carries no `security-severity`. */
-const SARIF_LEVELS: Readonly<Record<string, SecuritySeverity>> = { error: 'high', warning: 'medium', note: 'low', none: 'info' }
+const SARIF_LEVELS: Readonly<Record<string, InstallGateSeverity>> = { error: 'high', warning: 'medium', note: 'low', none: 'info' }
 
 /**
  * Read a SARIF 2.1 log into findings. Severity comes from the result's or its rule's `security-severity` (CVSS), else
@@ -350,7 +350,7 @@ export function sarifFindings(log: unknown, scanner: string, base: string, depen
       const line = typeof record(physical.region).startLine === 'number' ? Number(record(physical.region).startLine) : undefined
       const title = text(record(result.message).text) ?? text(record(rule.shortDescription).text) ?? ruleId ?? 'Finding'
       findings.push({
-        scanner, severity, category: dependency ? 'vulnerability' : 'custom', title: clip(title),
+        source: scanner, severity, category: dependency ? 'vulnerability' : 'custom', title: clip(title),
         ...ruleId === undefined ? {} : { ruleId }, ...file === undefined ? {} : { file }, ...line === undefined ? {} : { line },
         dependency, dedupeKey: `${scanner}:${ruleId ?? ''}:${file ?? ''}:${line ?? ''}:${title}`,
       })

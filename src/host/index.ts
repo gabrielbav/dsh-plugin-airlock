@@ -8,11 +8,12 @@ import { mkdir, readdir, readFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { execa } from 'execa'
 import { applySettings, ConfigError, parseSettings, SCANNER_NAMES } from './config.ts'
-import type { FetchRoute, HostContext, InstallGateRequest, InstallGateVerdict, SecurityReport } from './dsh.ts'
-import { scannerAvailability, scanPackage } from './engine/index.ts'
+import type { FetchRoute, HostContext, InstallGateRequest, InstallGateVerdict, InstallGateReport } from './dsh.ts'
+import { GATE_ID, scannerAvailability, scanPackage } from './engine/index.ts'
 import { scannerEnv } from './engine/runner.ts'
 import { customScanner, SCANNERS } from './engine/scanners.ts'
 import { writePrivateFile } from './files.ts'
+import { upgradeReport } from './reports.ts'
 import {
   BUILTIN_SCANNERS, type AirlockConfig, type AirlockScannerInfo, type AirlockService, type AirlockSettings,
   type BuiltinScannerId, type ResolvedScanner, type ScannerAdapter,
@@ -26,9 +27,6 @@ export const name = 'dsh-plugin-airlock'
 
 /** The plugin manager owns installation; the profile locates settings and reports. */
 export const inject = ['pluginManager', 'profileContext']
-
-/** Gate id the plugin manager knows this provider by. */
-const GATE_ID = 'dsh-plugin-airlock'
 
 /** Route prefix under the connection's shared `/api` channel. */
 const PREFIX = 'airlock.'
@@ -99,15 +97,15 @@ export function apply(ctx: HostContext, config: AirlockConfig): void {
     return scanned
   }
 
-  const readReport = async (packageName: string): Promise<SecurityReport | null> => {
-    try { return JSON.parse(await readFile(reportPath(packageName), 'utf8')) as SecurityReport }
+  const readReport = async (packageName: string): Promise<InstallGateReport | null> => {
+    try { return upgradeReport(JSON.parse(await readFile(reportPath(packageName), 'utf8'))) }
     catch (error) {
       if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null
       throw error
     }
   }
 
-  const listReports = async (): Promise<SecurityReport[]> => {
+  const listReports = async (): Promise<InstallGateReport[]> => {
     let names: string[]
     try { names = await readdir(reportsDir) }
     catch (error) {
@@ -115,8 +113,8 @@ export function apply(ctx: HostContext, config: AirlockConfig): void {
       throw error
     }
     const reports = await Promise.all(names.filter(file => file.endsWith('.json'))
-      .map(async file => JSON.parse(await readFile(join(reportsDir, file), 'utf8')) as SecurityReport))
-    return reports.sort((a, b) => b.scannedAt.localeCompare(a.scannedAt))
+      .map(async file => upgradeReport(JSON.parse(await readFile(join(reportsDir, file), 'utf8')))))
+    return reports.sort((a, b) => b.checkedAt.localeCompare(a.checkedAt))
   }
 
   const scannerInfo = async (): Promise<AirlockScannerInfo[]> => {

@@ -6,10 +6,11 @@ import { applySettings, ConfigError, Config, DEFAULT_CONFIG, parseConfig, parseS
 import { digestTree, rule, scanPackage } from '../src/host/engine/index.ts'
 import { inventory } from '../src/host/engine/quarantine.ts'
 import { customScanner, sarifFindings } from '../src/host/engine/scanners.ts'
+import { REASON_TEXT } from '../src/host/reasons.ts'
 import type { ResolvedScanner, ScannedFinding, ScannerOutcome } from '../src/host/types.ts'
 
 const finding = (severity: ScannedFinding['severity'], dependency = false, key = `${severity}:${dependency}`): ScannedFinding => ({
-  scanner: 'test', severity, category: 'test', title: 'test finding', dependency, dedupeKey: key,
+  source: 'test', severity, category: 'test', title: 'test finding', dependency, dedupeKey: key,
 })
 
 const outcome = (findings: ScannedFinding[], extra: Partial<ScannerOutcome> = {}): ScannerOutcome => ({
@@ -148,12 +149,13 @@ describe('quarantine and scanners', () => {
     })
     const scanned = await scan([custom('fake', tool), custom('broken', failing)])
     try {
-      expect(scanned.report.scanners).toEqual([
+      expect(scanned.report.checks).toEqual([
         expect.objectContaining({ id: 'fake', status: 'findings', findings: 1 }),
         expect.objectContaining({ id: 'broken', status: 'error' }),
       ])
-      expect(scanned.report).toMatchObject({ level: 'review', score: 75, findings: [expect.objectContaining({ scanner: 'fake', severity: 'high', title: 'bad thing' })] })
-      expect(scanned.report.reasons).toEqual(expect.arrayContaining(['scanner-error', 'score-below-pass']))
+      expect(scanned.report).toMatchObject({ level: 'review', score: 75, findings: [expect.objectContaining({ source: 'fake', severity: 'high', title: 'bad thing' })] })
+      expect(scanned.report.reasons).toEqual(expect.arrayContaining([REASON_TEXT['scanner-error'], REASON_TEXT['score-below-pass']]))
+      expect(scanned.report).toMatchObject({ gates: ['dsh-plugin-airlock'], metrics: { skills: 0 } })
     } finally { await scanned.dispose() }
   })
 
@@ -163,7 +165,7 @@ describe('quarantine and scanners', () => {
       { id: 'absent', name: 'Absent', origin: 'plugin', enabled: true, command: 'definitely-not-installed-tool', run: async () => outcome([]) },
     ])
     try {
-      expect(scanned.report.scanners.map(item => [item.id, item.status])).toEqual([['inline', 'clean'], ['absent', 'unavailable']])
+      expect(scanned.report.checks.map(item => [item.id, item.status])).toEqual([['inline', 'clean'], ['absent', 'unavailable']])
       expect(scanned.report.level).toBe('review')
       expect(await scanned.verifyInstalled(join(root, 'pkg'))).toBe(true)
       await writeFile(join(root, 'pkg', 'extra.js'), 'tampered')

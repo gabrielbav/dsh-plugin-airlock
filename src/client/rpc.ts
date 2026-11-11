@@ -1,13 +1,13 @@
 /** Calls to the Host half's `/api/airlock.<endpoint>` routes. */
 import type { AirlockConfig, AirlockScannerInfo, AirlockSettings } from '../host/types.ts'
-import type { ClientContext, SecurityReport } from './dsh.ts'
+import type { ClientContext, InstallGateReport } from './dsh.ts'
 
 /** A Host answer the caller shows as an error message. */
 export class AirlockRequestError extends Error {}
 
 /** Typed Host endpoints. */
 export interface AirlockApi {
-  report(name: string): Promise<SecurityReport | null>
+  report(name: string): Promise<InstallGateReport | null>
   scanners(): Promise<AirlockScannerInfo[]>
   settings(): Promise<{ settings: AirlockSettings; effective: AirlockConfig }>
   saveSettings(settings: AirlockSettings): Promise<{ settings: AirlockSettings; effective: AirlockConfig }>

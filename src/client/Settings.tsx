@@ -5,11 +5,11 @@
 import { useCallback, useEffect, useState, type ReactNode } from 'react'
 import { Button, Switch, Tag } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { AirlockConfig, AirlockScannerInfo, AirlockSettings, BuiltinScannerId, CustomScanner } from '../host/types.ts'
-import type { SecuritySeverity } from './dsh.ts'
+import type { InstallGateSeverity } from './dsh.ts'
 import type { AirlockApi } from './rpc.ts'
 import type { AirlockT } from './SecurityScore.tsx'
 
-const SEVERITIES: readonly SecuritySeverity[] = ['critical', 'high', 'medium', 'low', 'info']
+const SEVERITIES: readonly InstallGateSeverity[] = ['critical', 'high', 'medium', 'low', 'info']
 
 type Loaded = { settings: AirlockSettings; effective: AirlockConfig; scanners: AirlockScannerInfo[] }
 
@@ -104,10 +104,10 @@ export function Settings({ view, api, t }: { readonly view: 'summary' | 'page'; 
       <Switch checked={checked} onChange={onChange} label={label} />
     </div>
   )
-  const severitySelect = (value: SecuritySeverity, onChange: (next: SecuritySeverity) => void, label: string): ReactNode => (
+  const severitySelect = (value: InstallGateSeverity, onChange: (next: InstallGateSeverity) => void, label: string): ReactNode => (
     <label className="airlock-field">
       <span>{label}</span>
-      <select value={value} onChange={event => { onChange(event.currentTarget.value as SecuritySeverity) }}>
+      <select value={value} onChange={event => { onChange(event.currentTarget.value as InstallGateSeverity) }}>
         {SEVERITIES.map(level => <option key={level} value={level}>{t(`severity.${level}`)}</option>)}
       </select>
     </label>

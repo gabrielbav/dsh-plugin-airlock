@@ -7,11 +7,15 @@ import { readFileSync } from 'node:fs'
 import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import type { QuarantineFetchResult, SecurityReport } from '../dsh.ts'
+import type { QuarantineFetchResult, InstallGateReport } from '../dsh.ts'
 import type { AirlockConfig, ResolvedScanner, ScannerOutcome } from '../types.ts'
 import { copySubject, digestTree, inventory, LOCAL_SKIPPED_DIRS } from './quarantine.ts'
 import { resolveExecutable } from './runner.ts'
 import { rule } from './score.ts'
+import { REASON_TEXT } from '../reasons.ts'
+
+/** The gate id the plugin manager knows Airlock by. */
+export const GATE_ID = 'dsh-plugin-airlock'
 
 export { digestTree } from './quarantine.ts'
 export { rule, atLeast, SEVERITIES } from './score.ts'
@@ -33,7 +37,7 @@ export interface ScanRequest {
 
 /** A finished scan. */
 export interface ScanResult {
-  readonly report: SecurityReport
+  readonly report: InstallGateReport
   /**
    * Whether a directory holds exactly the scanned files.
    * @param dir Installed package directory.
@@ -111,18 +115,22 @@ export async function scanPackage(request: ScanRequest): Promise<ScanResult> {
     }))
     request.signal.throwIfAborted()
     const extra = [...found.configFindings, ...symlinks.map(link => ({
-      scanner: 'airlock', severity: 'low' as const, category: 'symlink', title: 'Symbolic link was not scanned', file: link, dependency: false, dedupeKey: `symlink:${link}`,
+      source: 'airlock', severity: 'low' as const, category: 'symlink', title: 'Symbolic link was not scanned', file: link, dependency: false, dedupeKey: `symlink:${link}`,
     }))]
     const ruling = rule([...outcomes, { id: 'airlock', status: 'clean', findings: extra, durationMs: 0, usedLlm: false }], request.config.policy)
     const kept = ruling.findings.slice(0, request.config.maxFindings)
-    const report: SecurityReport = {
+    const report: InstallGateReport = {
       digest, spec: request.spec, packageName: name, ...version === undefined ? {} : { version },
-      score: ruling.score, level: ruling.level, reasons: ruling.reasons,
-      scanners: outcomes.map(({ id, status, findings, detail, durationMs }) => ({ id, status, findings: findings.length, ...detail === undefined ? {} : { detail }, durationMs })),
+      score: ruling.score, level: ruling.level, reasons: ruling.reasons.map(reason => REASON_TEXT[reason]),
+      checks: outcomes.map(({ id, status, findings, detail, durationMs }) => ({
+        id, name: request.scanners.find(scanner => scanner.id === id)?.name ?? id, status, findings: findings.length,
+        ...detail === undefined ? {} : { detail }, durationMs,
+      })),
       findings: kept.map(({ dependency, dedupeKey, ...finding }) => { void dependency; void dedupeKey; return finding }),
       omittedFindings: ruling.findings.length - kept.length,
-      inventory: { skills: found.skills.length, prompts: found.prompts.length, mcpTools: found.mcpTools, dependencies: countLocked(fetchDir) },
-      scannedAt: new Date().toISOString(),
+      metrics: { skills: found.skills.length, prompts: found.prompts.length, mcpTools: found.mcpTools, dependencies: countLocked(fetchDir) },
+      gates: [GATE_ID],
+      checkedAt: new Date().toISOString(),
     }
     request.log(`airlock: security score ${report.score}/100, ${report.level}\n`, report.level === 'pass' ? 'stdout' : 'stderr')
     return { report, verifyInstalled: async dir => await digestTree(dir, LOCAL_SKIPPED_DIRS) === digest, dispose }

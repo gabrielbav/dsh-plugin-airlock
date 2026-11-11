@@ -1,9 +1,10 @@
 /** Turn scanner outcomes into a security score, a level, and the reasons for it. */
-import type { SecurityLevel, SecurityReason, SecuritySeverity } from '../dsh.ts'
+import type { InstallGateLevel, InstallGateSeverity } from '../dsh.ts'
+import type { AirlockReason } from '../reasons.ts'
 import type { AirlockPolicy, ScannedFinding, ScannerOutcome } from '../types.ts'
 
 /** Severities from most to least severe. */
-export const SEVERITIES: readonly SecuritySeverity[] = ['critical', 'high', 'medium', 'low', 'info']
+export const SEVERITIES: readonly InstallGateSeverity[] = ['critical', 'high', 'medium', 'low', 'info']
 
 /**
  * Whether `severity` is at least as severe as `threshold`.
@@ -11,15 +12,15 @@ export const SEVERITIES: readonly SecuritySeverity[] = ['critical', 'high', 'med
  * @param threshold Threshold severity.
  * @returns True when it reaches the threshold.
  */
-export function atLeast(severity: SecuritySeverity, threshold: SecuritySeverity): boolean {
+export function atLeast(severity: InstallGateSeverity, threshold: InstallGateSeverity): boolean {
   return SEVERITIES.indexOf(severity) <= SEVERITIES.indexOf(threshold)
 }
 
 /** The ruling on a set of scanner outcomes. */
 export interface Ruling {
   readonly score: number
-  readonly level: SecurityLevel
-  readonly reasons: SecurityReason[]
+  readonly level: InstallGateLevel
+  readonly reasons: AirlockReason[]
   /** Deduplicated findings, most severe first. */
   readonly findings: ScannedFinding[]
 }
@@ -45,7 +46,7 @@ export function rule(outcomes: readonly ScannerOutcome[], policy: AirlockPolicy)
   const score = Math.max(0, Math.round(100 - deduction))
   // Dependency advisories lower the shown score and ask for review, but block only at their own severity threshold.
   const contentScore = Math.max(0, Math.round(100 - findings.filter(finding => !finding.dependency).reduce((sum, finding) => sum + policy.weights[finding.severity], 0)))
-  const reasons: SecurityReason[] = []
+  const reasons: AirlockReason[] = []
   const blocks = findings.some(finding => atLeast(finding.severity, finding.dependency ? policy.dependencyBlockSeverity : policy.blockSeverity))
   if (blocks) reasons.push('finding-blocks')
   if (contentScore < policy.blockScore) reasons.push('score-below-block')
@@ -54,6 +55,6 @@ export function rule(outcomes: readonly ScannerOutcome[], policy: AirlockPolicy)
   if (outcomes.some(outcome => outcome.status === 'unavailable')) reasons.push('scanner-unavailable')
   if (outcomes.some(outcome => outcome.status === 'error')) reasons.push('scanner-error')
   if (policy.requireLlm && !outcomes.some(outcome => outcome.usedLlm)) reasons.push('llm-not-run')
-  const level: SecurityLevel = blocks || contentScore < policy.blockScore ? 'block' : reasons.length > 0 ? 'review' : 'pass'
+  const level: InstallGateLevel = blocks || contentScore < policy.blockScore ? 'block' : reasons.length > 0 ? 'review' : 'pass'
   return { score, level, reasons, findings }
 }

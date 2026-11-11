@@ -4,24 +4,23 @@
  * here exists at runtime, so the package loads against any DSH release that provides the install gate.
  */
 
-export type SecurityLevel = 'pass' | 'review' | 'block'
-export type SecuritySeverity = 'critical' | 'high' | 'medium' | 'low' | 'info'
-export type SecurityScannerStatus = 'clean' | 'findings' | 'not-applicable' | 'disabled' | 'unavailable' | 'error'
-export type SecurityReason =
-  | 'finding-blocks' | 'score-below-block' | 'score-below-pass' | 'findings-need-review'
-  | 'scanner-unavailable' | 'scanner-error' | 'llm-not-run'
+export interface InstallGateText { readonly en: string; readonly [locale: string]: string }
+export type InstallGateLevel = 'pass' | 'review' | 'block'
+export type InstallGateSeverity = 'critical' | 'high' | 'medium' | 'low' | 'info'
+export type InstallGateCheckStatus = 'clean' | 'findings' | 'not-applicable' | 'disabled' | 'unavailable' | 'error'
 
-export interface SecurityScannerRun {
+export interface InstallGateCheck {
   readonly id: string
-  readonly status: SecurityScannerStatus
+  readonly name?: string
+  readonly status: InstallGateCheckStatus
   readonly findings: number
   readonly detail?: string
-  readonly durationMs: number
+  readonly durationMs?: number
 }
 
-export interface SecurityFinding {
-  readonly scanner: string
-  readonly severity: SecuritySeverity
+export interface InstallGateFinding {
+  readonly source: string
+  readonly severity: InstallGateSeverity
   readonly category: string
   readonly title: string
   readonly ruleId?: string
@@ -29,19 +28,20 @@ export interface SecurityFinding {
   readonly line?: number
 }
 
-export interface SecurityReport {
+export interface InstallGateReport {
   readonly digest: string
   readonly spec: string
   readonly packageName?: string
   readonly version?: string
-  readonly score: number
-  readonly level: SecurityLevel
-  readonly reasons: readonly SecurityReason[]
-  readonly scanners: readonly SecurityScannerRun[]
-  readonly findings: readonly SecurityFinding[]
+  readonly level: InstallGateLevel
+  readonly score?: number
+  readonly reasons: readonly InstallGateText[]
+  readonly checks?: readonly InstallGateCheck[]
+  readonly findings: readonly InstallGateFinding[]
   readonly omittedFindings: number
-  readonly inventory: { readonly skills: number; readonly prompts: number; readonly mcpTools: number; readonly dependencies: number }
-  readonly scannedAt: string
+  readonly metrics?: Readonly<Record<string, number>>
+  readonly gates: readonly string[]
+  readonly checkedAt: string
 }
 
 export interface QuarantineFetchResult {
@@ -59,7 +59,7 @@ export interface InstallGateRequest {
 }
 
 export interface InstallGateVerdict {
-  readonly report: SecurityReport
+  readonly report: InstallGateReport
   readonly verifyInstalled: (dir: string) => Promise<boolean>
   readonly dispose: () => Promise<void>
 }

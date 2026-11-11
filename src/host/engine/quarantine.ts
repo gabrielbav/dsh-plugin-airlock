@@ -166,7 +166,7 @@ export async function inventory(subject: string, promptsRoot: string, options: {
     lines.forEach((line, index) => {
       if (/!!?js\b/.test(line)) {
         configFindings.push({
-          scanner: 'airlock', severity: 'medium', category: 'code_execution', title: 'Configuration evaluates a JavaScript expression when it loads',
+          source: 'airlock', severity: 'medium', category: 'code_execution', title: 'Configuration evaluates a JavaScript expression when it loads',
           ruleId: 'AIRLOCK_CONFIG_JS', file, line: index + 1, dependency: false, dedupeKey: `js:${file}:${index + 1}`,
         })
       }
@@ -180,7 +180,7 @@ export async function inventory(subject: string, promptsRoot: string, options: {
     }
     for (const server of servers) {
       configFindings.push({
-        scanner: 'airlock', severity: 'medium', category: 'mcp_server', title: `Declares MCP server "${server.name}": ${server.target}`,
+        source: 'airlock', severity: 'medium', category: 'mcp_server', title: `Declares MCP server "${server.name}": ${server.target}`,
         ruleId: 'AIRLOCK_MCP_SERVER', file, dependency: false, dedupeKey: `mcp:${file}:${server.name}`,
       })
     }

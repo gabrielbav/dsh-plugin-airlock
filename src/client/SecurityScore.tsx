@@ -4,7 +4,7 @@
  */
 import { useId, useState, type ReactNode } from 'react'
 import { Button, Checkbox, Tag, type TagTone } from '@deepseek-ai/dsh-client-ui-primitives'
-import type { SecurityLevel, SecurityReport, SecuritySeverity, Translate } from './dsh.ts'
+import type { InstallGateLevel, InstallGateReport, InstallGateSeverity, InstallGateText, Translate } from './dsh.ts'
 import type { AirlockKey } from './locales.ts'
 
 /** Translate seat of the `airlock` namespace. */
@@ -13,20 +13,20 @@ export type AirlockT = Translate<AirlockKey>
 /** Findings shown before the list unfolds. */
 const FOLDED_FINDINGS = 5
 
-const LEVEL_KEYS = { pass: 'levelPass', review: 'levelReview', block: 'levelBlock' } as const satisfies Record<SecurityLevel, string>
+const LEVEL_KEYS = { pass: 'levelPass', review: 'levelReview', block: 'levelBlock' } as const satisfies Record<InstallGateLevel, string>
 
-const LEVEL_TONES = { pass: 'success', review: 'warning', block: 'danger' } as const satisfies Record<SecurityLevel, TagTone>
+const LEVEL_TONES = { pass: 'success', review: 'warning', block: 'danger' } as const satisfies Record<InstallGateLevel, TagTone>
 
 const SEVERITY_TONES = {
   critical: 'danger', high: 'danger', medium: 'warning', low: 'neutral', info: 'quiet',
-} as const satisfies Record<SecuritySeverity, TagTone>
+} as const satisfies Record<InstallGateSeverity, TagTone>
 
 /**
  * The tag tone of a security level.
  * @param level - the report's level.
  * @returns green, amber or red tone.
  */
-export function levelTone(level: SecurityLevel): TagTone {
+export function levelTone(level: InstallGateLevel): TagTone {
   return LEVEL_TONES[level]
 }
 
@@ -39,12 +39,12 @@ const NAMED_SCANNERS = new Set(['cisco-skill-scanner', 'skillscan', 'cisco-mcp-s
  * @param id - scanner id.
  * @returns the product name for a built-in scanner, else the id.
  */
-export function scannerLabel(t: AirlockT, id: string): string {
-  return NAMED_SCANNERS.has(id) ? t(`scanner.${id}` as AirlockKey) : id
+export function scannerLabel(t: AirlockT, id: string, name?: string): string {
+  return NAMED_SCANNERS.has(id) ? t(`scanner.${id}` as AirlockKey) : name ?? id
 }
 
 /** The score dial: a ring filled to the score, colored by level. */
-function ScoreDial({ score, level }: { readonly score: number; readonly level: SecurityLevel }): ReactNode {
+function ScoreDial({ score, level }: { readonly score: number; readonly level: InstallGateLevel }): ReactNode {
   const radius = 26
   const circumference = 2 * Math.PI * radius
   return (
@@ -65,15 +65,20 @@ function ScoreDial({ score, level }: { readonly score: number; readonly level: S
  * @param props.outcome - `review` waits for acknowledgement, `blocked` was refused, `installed` finished.
  * @param props.acknowledge - repeat the installation with the report acknowledged; present only for `review`.
  * @param props.t - translate seat.
+ * @param props.resolve - localized-text resolver.
  * @returns the card.
  */
-export function SecurityScore({ report, outcome, acknowledge, t }: {
-  readonly report: SecurityReport
+export function SecurityScore({ report, outcome, acknowledge, t, resolve }: {
+  readonly report: InstallGateReport
   readonly outcome: 'review' | 'blocked' | 'installed'
   readonly acknowledge?: (() => void) | undefined
   readonly t: AirlockT
+  /** Pick the person's locale from a gate's localized text. */
+  readonly resolve: (text: InstallGateText) => string
 }): ReactNode {
   const titleId = useId()
+  const score = report.score ?? 0
+  const metrics = report.metrics ?? {}
   const [accepted, setAccepted] = useState(false)
   const [unfolded, setUnfolded] = useState(false)
   const summary = outcome === 'blocked' ? 'outcomeBlock'
@@ -82,9 +87,9 @@ export function SecurityScore({ report, outcome, acknowledge, t }: {
   const findings = unfolded ? report.findings : report.findings.slice(0, FOLDED_FINDINGS)
   const total = report.findings.length + report.omittedFindings
   return (
-    <section className="airlock-card" data-level={report.level} role="group" aria-labelledby={titleId} data-airlock-score={report.score}>
+    <section className="airlock-card" data-level={report.level} role="group" aria-labelledby={titleId} data-airlock-score={score}>
       <header className="airlock-head">
-        <ScoreDial score={report.score} level={report.level} />
+        <ScoreDial score={score} level={report.level} />
         <div className="airlock-head-text">
           <h3 id={titleId} className="airlock-title">{t('title')}</h3>
           <Tag tone={LEVEL_TONES[report.level]}>{t(LEVEL_KEYS[report.level])}</Tag>
@@ -92,23 +97,23 @@ export function SecurityScore({ report, outcome, acknowledge, t }: {
       </header>
       <p className="airlock-summary" role={outcome === 'blocked' ? 'alert' : undefined}>{t(summary)}</p>
       <p className="airlock-meta">{t('inventory', {
-        skills: String(report.inventory.skills), prompts: String(report.inventory.prompts),
-        mcpTools: String(report.inventory.mcpTools), dependencies: String(report.inventory.dependencies),
+        skills: String(metrics.skills ?? 0), prompts: String(metrics.prompts ?? 0),
+        mcpTools: String(metrics.mcpTools ?? 0), dependencies: String(metrics.dependencies ?? 0),
       })}</p>
       {report.reasons.length === 0 ? null : (
         <div className="airlock-block">
           <h4 className="airlock-block-title">{t('reasonsTitle')}</h4>
           <ul className="airlock-reasons">
-            {report.reasons.map(reason => <li key={reason}>{t(`reason.${reason}`)}</li>)}
+            {report.reasons.map((reason, index) => <li key={index}>{resolve(reason)}</li>)}
           </ul>
         </div>
       )}
       <div className="airlock-block">
         <h4 className="airlock-block-title">{t('scannersTitle')}</h4>
         <ul className="airlock-scanners">
-          {report.scanners.map(scanner => (
+          {(report.checks ?? []).map(scanner => (
             <li key={scanner.id} className="airlock-scanner" data-status={scanner.status} title={scanner.detail}>
-              <span className="airlock-scanner-name">{scannerLabel(t, scanner.id)}</span>
+              <span className="airlock-scanner-name">{scannerLabel(t, scanner.id, scanner.name)}</span>
               <span className="airlock-scanner-status">{t(`status.${scanner.status}`, { count: String(scanner.findings) })}</span>
             </li>
           ))}
@@ -121,12 +126,12 @@ export function SecurityScore({ report, outcome, acknowledge, t }: {
           : (
             <ul className="airlock-findings">
               {findings.map((finding, index) => (
-                <li key={`${finding.scanner}:${index}`} className="airlock-finding">
+                <li key={`${finding.source}:${index}`} className="airlock-finding">
                   <Tag tone={SEVERITY_TONES[finding.severity]}>{t(`severity.${finding.severity}`)}</Tag>
                   <span className="airlock-finding-body">
                     <span className="airlock-finding-title">{finding.title}</span>
                     <span className="airlock-finding-where">
-                      {scannerLabel(t, finding.scanner)}
+                      {scannerLabel(t, finding.source)}
                       {finding.file === undefined ? null : <> · <code>{finding.file}{finding.line === undefined ? '' : `:${finding.line}`}</code></>}
                       {finding.ruleId === undefined ? null : <> · <code>{finding.ruleId}</code></>}
                     </span>

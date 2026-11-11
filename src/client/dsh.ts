@@ -1,8 +1,8 @@
 /** Type-only copies of the DSH browser interfaces the client half uses. */
 import type { ComponentType } from 'react'
-import type { SecurityReport } from '../host/dsh.ts'
+import type { InstallGateReport } from '../host/dsh.ts'
 
-export type { SecurityFinding, SecurityLevel, SecurityReason, SecurityReport, SecuritySeverity } from '../host/dsh.ts'
+export type { InstallGateFinding, InstallGateLevel, InstallGateReport, InstallGateSeverity, InstallGateText } from '../host/dsh.ts'
 
 /** A translate function bound to one locale namespace. */
 export type Translate<K extends string = string> = (key: K, params?: Readonly<Record<string, string>>) => string
@@ -16,9 +16,9 @@ export type PluginsSubject =
   | { kind: 'row'; pkg: { name: string }; row: unknown }
   | { kind: 'item'; id: string }
 
-/** Owner props of `plugins.install.security`. */
-export interface InstallSecurityProps {
-  readonly report: SecurityReport
+/** Owner props of `plugins.install.gate`. */
+export interface InstallGateProps {
+  readonly report: InstallGateReport
   readonly outcome: 'review' | 'blocked' | 'installed'
   readonly acknowledge?: () => void
 }
@@ -35,7 +35,11 @@ export interface ClientContext {
     inject(name: string, register: () => () => void): void
     register<P>(options: { name: string; id?: string; key?: string; locale?: string }, component: ComponentType<P>): () => void
   }
-  readonly locale: { register(namespace: string, dictionaries: Readonly<Record<string, Readonly<Record<string, string>>>>): () => void }
+  readonly locale: {
+    register(namespace: string, dictionaries: Readonly<Record<string, Readonly<Record<string, string>>>>): () => void
+    /** The person's locale's entry of a localized text, falling back to English. */
+    resolveText(text: { readonly en: string; readonly [locale: string]: string }): string
+  }
   readonly connection: { readonly rpc: { call(channel: string, method: string, payload: unknown, signal?: AbortSignal): Promise<RpcResult<unknown>> } }
   effect(execute: () => () => void, label?: string): void
 }
