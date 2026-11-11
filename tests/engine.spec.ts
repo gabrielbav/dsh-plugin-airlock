@@ -36,6 +36,7 @@ describe('rule', () => {
 
   it('caps a clean scan at review without LLM analysis, a missing scanner, or a failed scanner', () => {
     expect(rule([outcome([], { usedLlm: false })], policy)).toMatchObject({ level: 'review', reasons: ['llm-not-run'] })
+    expect(rule([outcome([], { usedLlm: false })], policy, false)).toMatchObject({ level: 'pass', reasons: [] })
     expect(rule([outcome([]), outcome([], { status: 'unavailable' })], policy)).toMatchObject({ level: 'review', reasons: ['scanner-unavailable'] })
     expect(rule([outcome([]), outcome([], { status: 'error' })], policy)).toMatchObject({ level: 'review', reasons: ['scanner-error'] })
   })
@@ -178,5 +179,21 @@ describe('quarantine and scanners', () => {
       spec: 'x', signal: new AbortController().signal, log: () => {}, tmpRoot: root, config: DEFAULT_CONFIG, scanners: [],
       fetch: async () => ({ exitCode: 1, output: 'ERR_PNPM_FETCH_404' }),
     })).rejects.toThrow(/quarantine fetch failed/)
+  })
+})
+
+describe('advisory impact', () => {
+  it('reads availability-only, data and integrity impacts from CVSS vectors, else CWEs', async () => {
+    const { advisoryImpact, advisory } = await import('../src/host/engine/scanners.ts')
+    expect(advisoryImpact(['CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:N/A:H'], [])).toBe('availability')
+    expect(advisoryImpact(['CVSS:3.1/AV:N/AC:H/PR:N/UI:N/S:U/C:N/I:H/A:H'], [])).toBe('integrity')
+    expect(advisoryImpact(['CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:N/A:N'], [])).toBe('confidentiality')
+    expect(advisoryImpact(['CVSS:4.0/AV:N/AC:L/AT:N/PR:N/UI:N/VC:N/VI:N/VA:H/SC:N/SI:N/SA:N'], [])).toBe('availability')
+    expect(advisoryImpact([], ['CWE-1333', 'CWE-400'])).toBe('availability')
+    expect(advisoryImpact([], ['CWE-1321'])).toBe('integrity')
+    expect(advisoryImpact([], [])).toBe('unknown')
+    expect(advisory('high', 'availability', DEFAULT_CONFIG)).toEqual({ category: 'denial-of-service', severity: 'low' })
+    expect(advisory('low', 'integrity', DEFAULT_CONFIG)).toEqual({ category: 'integrity', severity: 'low' })
+    expect(advisory('high', 'availability', applySettings(DEFAULT_CONFIG, { policy: { availabilitySeverity: 'high' } }))).toMatchObject({ severity: 'high' })
   })
 })

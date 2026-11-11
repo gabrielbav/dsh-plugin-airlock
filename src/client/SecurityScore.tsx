@@ -4,7 +4,7 @@
  */
 import { useId, useState, type ReactNode } from 'react'
 import { Button, Checkbox, Tag, type TagTone } from '@deepseek-ai/dsh-client-ui-primitives'
-import type { InstallGateLevel, InstallGateReport, InstallGateSeverity, InstallGateText, Translate } from './dsh.ts'
+import type { InstallGateFinding, InstallGateLevel, InstallGateReport, InstallGateSeverity, InstallGateText, Translate } from './dsh.ts'
 import type { AirlockKey } from './locales.ts'
 
 /** Translate seat of the `airlock` namespace. */
@@ -41,6 +41,79 @@ const NAMED_SCANNERS = new Set(['cisco-skill-scanner', 'skillscan', 'cisco-mcp-s
  */
 export function scannerLabel(t: AirlockT, id: string, name?: string): string {
   return NAMED_SCANNERS.has(id) ? t(`scanner.${id}` as AirlockKey) : name ?? id
+}
+
+/** Impact categories Airlock assigns to dependency advisories. */
+const IMPACTS = new Set(['denial-of-service', 'data-exposure', 'integrity', 'vulnerability'])
+
+type AreaResult = 'ok' | 'found' | 'na' | 'error' | 'incomplete'
+
+/** One security area of the summary: its checks and the findings that belong to it. */
+interface Area {
+  readonly id: 'instructions' | 'mcp' | 'dependencies' | 'secrets' | 'config'
+  readonly checks: readonly string[]
+  readonly owns: (finding: InstallGateFinding) => boolean
+  readonly applicable: (metrics: Readonly<Record<string, number>>) => boolean
+}
+
+const AREAS: readonly Area[] = [
+  { id: 'instructions', checks: ['cisco-skill-scanner', 'skillscan'], owns: f => f.source === 'cisco-skill-scanner' || f.source === 'skillscan',
+    applicable: m => (m.skills ?? 0) + (m.prompts ?? 0) > 0 },
+  { id: 'mcp', checks: ['cisco-mcp-scanner'], owns: f => f.source === 'cisco-mcp-scanner', applicable: m => (m.mcpTools ?? 0) > 0 },
+  { id: 'dependencies', checks: ['osv-scanner', 'trivy'], owns: f => IMPACTS.has(f.category), applicable: () => true },
+  { id: 'secrets', checks: ['gitleaks', 'trivy'], owns: f => f.category === 'secret', applicable: () => true },
+  { id: 'config', checks: [], owns: f => f.source === 'airlock', applicable: () => true },
+]
+
+const RESULT_TONES = { ok: 'success', found: 'warning', na: 'quiet', error: 'danger', incomplete: 'danger' } as const satisfies Record<AreaResult, TagTone>
+
+/** The plain-language summary of what Airlock checked, by security area. */
+function CheckSummary({ report, t }: { readonly report: InstallGateReport; readonly t: AirlockT }): ReactNode {
+  const metrics = report.metrics ?? {}
+  const checks = report.checks ?? []
+  const covered = new Set(AREAS.flatMap(area => area.checks))
+  const vars = {
+    skills: String(metrics.skills ?? 0), prompts: String(metrics.prompts ?? 0), tools: String(metrics.mcpTools ?? 0),
+    packages: String(metrics.dependencies ?? 0),
+  }
+  const rows = AREAS.map((area) => {
+    const own = checks.filter(check => area.checks.includes(check.id))
+    const findings = report.findings.filter(area.owns)
+    const result: AreaResult = own.some(check => check.status === 'error') ? 'error'
+      : own.some(check => check.status === 'unavailable') ? 'incomplete'
+        : !area.applicable(metrics) ? 'na'
+          : findings.length > 0 ? 'found' : 'ok'
+    const dos = findings.filter(finding => finding.category === 'denial-of-service').length
+    const detail = result === 'na' ? t(`na.${area.id}` as AirlockKey)
+      : result === 'ok' ? t(`detail.${area.id}.none` as AirlockKey, vars)
+        : area.id === 'dependencies' && result === 'found'
+          ? t('detail.dependencies.found', { ...vars, count: String(findings.length), security: String(findings.length - dos), dos: String(dos) })
+          : null
+    return { area, result, detail, count: findings.length }
+  })
+  const others = checks.filter(check => !covered.has(check.id))
+  return (
+    <div className="airlock-block">
+      <h4 className="airlock-block-title">{t('checkedTitle')}</h4>
+      <ul className="airlock-areas">
+        {rows.map(({ area, result, detail, count }) => (
+          <li key={area.id} className="airlock-area" data-result={result}>
+            <span className="airlock-area-head">
+              <span className="airlock-area-name">{t(`area.${area.id}`)}</span>
+              <Tag tone={RESULT_TONES[result]}>{t(`result.${result}`, { count: String(count) })}</Tag>
+            </span>
+            {detail === null ? null : <span className="airlock-area-detail">{detail}</span>}
+          </li>
+        ))}
+        {others.length === 0 ? null : (
+          <li className="airlock-area">
+            <span className="airlock-area-head"><span className="airlock-area-name">{t('area.other')}</span></span>
+            <span className="airlock-area-detail">{others.map(check => `${check.name ?? check.id}: ${t(`status.${check.status}`, { count: String(check.findings) })}`).join(' · ')}</span>
+          </li>
+        )}
+      </ul>
+    </div>
+  )
 }
 
 /** The score dial: a ring filled to the score, colored by level. */
@@ -100,6 +173,7 @@ export function SecurityScore({ report, outcome, acknowledge, t, resolve }: {
         skills: String(metrics.skills ?? 0), prompts: String(metrics.prompts ?? 0),
         mcpTools: String(metrics.mcpTools ?? 0), dependencies: String(metrics.dependencies ?? 0),
       })}</p>
+      <CheckSummary report={report} t={t} />
       {report.reasons.length === 0 ? null : (
         <div className="airlock-block">
           <h4 className="airlock-block-title">{t('reasonsTitle')}</h4>
@@ -129,7 +203,10 @@ export function SecurityScore({ report, outcome, acknowledge, t, resolve }: {
                 <li key={`${finding.source}:${index}`} className="airlock-finding">
                   <Tag tone={SEVERITY_TONES[finding.severity]}>{t(`severity.${finding.severity}`)}</Tag>
                   <span className="airlock-finding-body">
-                    <span className="airlock-finding-title">{finding.title}</span>
+                    <span className="airlock-finding-title">
+                      {IMPACTS.has(finding.category) ? <span className="airlock-impact" data-impact={finding.category}>{t(`impact.${finding.category}` as AirlockKey)}</span> : null}
+                      {finding.title}
+                    </span>
                     <span className="airlock-finding-where">
                       {scannerLabel(t, finding.source)}
                       {finding.file === undefined ? null : <> · <code>{finding.file}{finding.line === undefined ? '' : `:${finding.line}`}</code></>}

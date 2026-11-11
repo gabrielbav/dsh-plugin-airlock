@@ -166,7 +166,8 @@ export async function inventory(subject: string, promptsRoot: string, options: {
     lines.forEach((line, index) => {
       if (/!!?js\b/.test(line)) {
         configFindings.push({
-          source: 'airlock', severity: 'medium', category: 'code_execution', title: 'Configuration evaluates a JavaScript expression when it loads',
+          // Plugin code already runs with full permissions once installed, so a load-time expression is informational.
+          source: 'airlock', severity: 'info', category: 'code_execution', title: 'Configuration evaluates a JavaScript expression when it loads',
           ruleId: 'AIRLOCK_CONFIG_JS', file, line: index + 1, dependency: false, dedupeKey: `js:${file}:${index + 1}`,
         })
       }

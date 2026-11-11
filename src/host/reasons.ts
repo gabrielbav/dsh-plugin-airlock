@@ -10,6 +10,7 @@ export type AirlockReason =
   | 'scanner-unavailable'
   | 'scanner-error'
   | 'llm-not-run'
+  | 'llm-failed'
 
 /** The localized text of each reason, in every DSH locale. */
 export const REASON_TEXT: Readonly<Record<AirlockReason, InstallGateText>> = {
@@ -82,5 +83,15 @@ export const REASON_TEXT: Readonly<Record<AirlockReason, InstallGateText>> = {
     de: "Die LLM-Analyse ist ausgeschaltet, daher ist das bestmögliche Ergebnis eine Prüfung.",
     ru: "Анализ с помощью LLM выключен, поэтому лучший возможный результат — проверка.",
     pt: "A análise por LLM está desligada, então o melhor resultado possível é uma revisão.",
+  },
+  'llm-failed': {
+    en: "The LLM judge is on but didn't answer in the format the scanners need, so the best possible result is a review.",
+    zh: "LLM 判定已开启，但未按扫描器需要的格式回答，因此最好的结果是需要审查。",
+    ja: "LLM 判定はオンですが、スキャナーが必要とする形式で回答しなかったため、最良の結果でも確認が必要です。",
+    es: "El juez LLM está activado pero no respondió en el formato que necesitan los escáneres, así que el mejor resultado posible es una revisión.",
+    fr: "Le juge LLM est activé mais n'a pas répondu au format attendu par les scanners ; le meilleur résultat possible est un examen.",
+    de: "Der LLM-Richter ist eingeschaltet, hat aber nicht im von den Scannern benötigten Format geantwortet; das bestmögliche Ergebnis ist eine Prüfung.",
+    ru: "LLM-судья включён, но не ответил в нужном сканерам формате, поэтому лучший возможный результат — проверка.",
+    pt: "O juiz LLM está ligado, mas não respondeu no formato que os scanners precisam, então o melhor resultado possível é uma revisão.",
   },
 }

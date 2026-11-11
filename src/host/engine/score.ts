@@ -33,12 +33,13 @@ export interface Ruling {
  * @param policy Thresholds and weights.
  * @returns Score, level and reasons.
  */
-export function rule(outcomes: readonly ScannerOutcome[], policy: AirlockPolicy): Ruling {
+export function rule(outcomes: readonly ScannerOutcome[], policy: AirlockPolicy, llmApplicable = true, llmConfigured = false): Ruling {
   const seen = new Set<string>()
   const findings: ScannedFinding[] = []
   for (const finding of outcomes.flatMap(outcome => outcome.findings)) {
-    if (seen.has(finding.dedupeKey)) continue
-    seen.add(finding.dedupeKey)
+    const keys = [finding.dedupeKey, ...finding.aliasKeys ?? []]
+    if (keys.some(key => seen.has(key))) continue
+    for (const key of keys) seen.add(key)
     findings.push(finding)
   }
   findings.sort((a, b) => SEVERITIES.indexOf(a.severity) - SEVERITIES.indexOf(b.severity))
@@ -54,7 +55,8 @@ export function rule(outcomes: readonly ScannerOutcome[], policy: AirlockPolicy)
   if (findings.some(finding => atLeast(finding.severity, policy.reviewSeverity))) reasons.push('findings-need-review')
   if (outcomes.some(outcome => outcome.status === 'unavailable')) reasons.push('scanner-unavailable')
   if (outcomes.some(outcome => outcome.status === 'error')) reasons.push('scanner-error')
-  if (policy.requireLlm && !outcomes.some(outcome => outcome.usedLlm)) reasons.push('llm-not-run')
+  // The LLM judges read skills, prompts and MCP tools; a package with none of them leaves it nothing to judge.
+  if (policy.requireLlm && llmApplicable && !outcomes.some(outcome => outcome.usedLlm)) reasons.push(llmConfigured ? 'llm-failed' : 'llm-not-run')
   const level: InstallGateLevel = blocks || contentScore < policy.blockScore ? 'block' : reasons.length > 0 ? 'review' : 'pass'
   return { score, level, reasons, findings }
 }

@@ -8,11 +8,12 @@ import { mkdir, readdir, readFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { execa } from 'execa'
 import { applySettings, ConfigError, parseSettings, SCANNER_NAMES } from './config.ts'
-import type { FetchRoute, HostContext, InstallGateRequest, InstallGateVerdict, InstallGateReport } from './dsh.ts'
+import type { FetchRoute, HostContext, InstallGateRequest, InstallGateVerdict, InstallGateReport, LlmModelInfo } from './dsh.ts'
 import { GATE_ID, scannerAvailability, scanPackage } from './engine/index.ts'
 import { scannerEnv } from './engine/runner.ts'
 import { customScanner, SCANNERS } from './engine/scanners.ts'
 import { writePrivateFile } from './files.ts'
+import { startLlmBridge } from './llm-bridge.ts'
 import { upgradeReport } from './reports.ts'
 import {
   BUILTIN_SCANNERS, type AirlockConfig, type AirlockScannerInfo, type AirlockService, type AirlockSettings,
@@ -89,7 +90,23 @@ export function apply(ctx: HostContext, config: AirlockConfig): void {
 
   const vet = async (request: InstallGateRequest): Promise<InstallGateVerdict> => {
     const current = await effective()
-    const scanned = await scanPackage({ ...request, config: current, scanners: resolveScanners(current) })
+    const llm = ctx.get('llm')
+    // The judge runs only with a chosen model the profile can call; otherwise the report says the LLM did not run.
+    const bridge = current.llm.enabled && current.llm.provider !== '' && current.llm.model !== '' && llm !== undefined
+      ? await startLlmBridge(llm, { provider: current.llm.provider, model: current.llm.model }, request.signal, (message) => {
+        ctx.logger.warn(`airlock: LLM judge ${current.llm.provider}/${current.llm.model}: ${message}`)
+        request.log(`airlock: LLM judge: ${message}\n`, 'stderr')
+      })
+      : undefined
+    let scanned
+    try {
+      scanned = await scanPackage({
+        ...request, config: current, scanners: resolveScanners(current),
+        ...bridge === undefined ? {} : { llm: { baseUrl: bridge.baseUrl, apiKey: bridge.apiKey, calls: model => bridge.calls(model) } },
+      })
+    } finally {
+      await bridge?.close()
+    }
     if (scanned.report.packageName !== undefined) {
       await mkdir(reportsDir, { recursive: true, mode: 0o700 })
       await writePrivateFile(reportPath(scanned.report.packageName), `${JSON.stringify(scanned.report, null, 2)}\n`)
@@ -150,8 +167,20 @@ export function apply(ctx: HostContext, config: AirlockConfig): void {
     return task
   }
 
+  /** The chat's model catalog: every provider's advertised models. */
+  const listModels = async (): Promise<(LlmModelInfo & { providerName: string })[]> => {
+    const llm = ctx.get('llm')
+    if (llm === undefined) return []
+    const lists = await Promise.all(llm.listProviders().map(async (provider) => {
+      try { return (await llm.listModels(provider.id)).map(model => ({ ...model, providerName: provider.name })) }
+      catch (error) { ctx.logger.warn(`airlock: could not list models of ${provider.id}`, error); return [] }
+    }))
+    return lists.flat()
+  }
+
   const dispatch = async (endpoint: string, payload: unknown): Promise<unknown> => {
     switch (endpoint) {
+      case 'models': return listModels()
       case 'report': return readReport(stringField(payload, 'name'))
       case 'reports': return listReports()
       case 'scanners': return scannerInfo()
@@ -195,7 +224,7 @@ export function apply(ctx: HostContext, config: AirlockConfig): void {
   ctx.effect(() => ctx.reflect.provide('airlock', service), 'airlock: scanner registry')
 
   ctx.inject(['connection'], (scope) => {
-    for (const endpoint of ['report', 'reports', 'scanners', 'settings', 'saveSettings', 'installScanner']) {
+    for (const endpoint of ['report', 'reports', 'scanners', 'models', 'settings', 'saveSettings', 'installScanner']) {
       const method = `${PREFIX}${endpoint}`
       const route: FetchRoute = {
         path: `/api/${method}`, methods: ['POST'], requestBody: 'buffered',

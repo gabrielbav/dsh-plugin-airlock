@@ -12,6 +12,8 @@ export interface AirlockApi {
   settings(): Promise<{ settings: AirlockSettings; effective: AirlockConfig }>
   saveSettings(settings: AirlockSettings): Promise<{ settings: AirlockSettings; effective: AirlockConfig }>
   installScanner(id: string): Promise<{ exitCode: number | null; output: string }>
+  /** The chat's model catalog. */
+  models(): Promise<{ provider: string; providerName: string; id: string; name: string }[]>
 }
 
 /**
@@ -31,5 +33,6 @@ export function airlockApi(ctx: ClientContext): AirlockApi {
     settings: () => call('settings', {}),
     saveSettings: settings => call('saveSettings', { settings }),
     installScanner: id => call('installScanner', { id }),
+    models: () => call('models', {}),
   }
 }

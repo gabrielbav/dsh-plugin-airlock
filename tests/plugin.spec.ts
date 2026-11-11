@@ -20,6 +20,7 @@ function mount() {
     profileContext: { dir: root },
     logger: { warn: () => {}, info: () => {} },
     reflect: { provide: (key, value) => { provided.set(key, value); return () => { provided.delete(key) } } },
+    get: () => undefined,
     effect: (execute) => { disposers.push(execute()) },
     inject: (_names, callback) => {
       callback({ ...ctx, connection: { fetch: { register: (route) => { routes.set(route.path, route); return () => { routes.delete(route.path) } } } } })
@@ -45,7 +46,7 @@ it('exports a function plugin that needs the plugin manager and the profile', ()
 it('registers its gate, routes and scanner registry, and removes them on disposal', async () => {
   const { gates, routes, provided, dispose } = mount()
   expect(gates.map(gate => gate.id)).toEqual(['dsh-plugin-airlock'])
-  expect([...routes.keys()].sort()).toEqual(['installScanner', 'report', 'reports', 'saveSettings', 'scanners', 'settings'].map(item => `/api/airlock.${item}`))
+  expect([...routes.keys()].sort()).toEqual(['installScanner', 'models', 'report', 'reports', 'saveSettings', 'scanners', 'settings'].map(item => `/api/airlock.${item}`))
   expect(provided.has('airlock')).toBe(true)
   await dispose()
   expect(gates).toEqual([])
@@ -89,5 +90,32 @@ it('scans with plugin-registered scanners and the saved policy, and stores the r
   } finally {
     await verdict.dispose()
     unregister()
+  }
+})
+
+it('bridges OpenAI chat requests to the selected DSH model behind a bearer token', async () => {
+  const { startLlmBridge, BRIDGE_MODEL } = await import('../src/host/llm-bridge.ts')
+  const seen: unknown[] = []
+  const llm = {
+    listProviders: () => [{ id: 'p', name: 'Provider' }],
+    listModels: async () => [{ provider: 'p', id: 'm', name: 'Model' }],
+    async *stream(options: unknown) {
+      seen.push(options)
+      yield { type: 'text-delta', text: '{"verdict":' }
+      yield { type: 'text-delta', text: '"safe"}' }
+      yield { type: 'finish', reason: { kind: 'stop' } }
+    },
+  }
+  const bridge = await startLlmBridge(llm, { provider: 'p', model: 'm' }, new AbortController().signal)
+  try {
+    const url = `${bridge.baseUrl}/chat/completions`
+    const body = JSON.stringify({ model: BRIDGE_MODEL, messages: [{ role: 'system', content: 'judge' }, { role: 'user', content: [{ type: 'text', text: 'skill text' }] }] })
+    expect((await fetch(url, { method: 'POST', body })).status).toBe(401)
+    const answer = await (await fetch(url, { method: 'POST', body, headers: { authorization: `Bearer ${bridge.apiKey}` } })).json() as { choices: { message: { content: string } }[] }
+    expect(answer.choices[0]?.message.content).toBe('{"verdict":"safe"}')
+    expect(seen[0]).toMatchObject({ provider: 'p', model: 'm', system: 'judge', messages: [{ role: 'user', content: [{ type: 'text', text: 'skill text' }] }] })
+    expect(bridge.calls()).toBe(1)
+  } finally {
+    await bridge.close()
   }
 })

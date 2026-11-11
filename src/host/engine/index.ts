@@ -8,7 +8,7 @@ import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promi
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { QuarantineFetchResult, InstallGateReport } from '../dsh.ts'
-import type { AirlockConfig, ResolvedScanner, ScannerOutcome } from '../types.ts'
+import type { AirlockConfig, ResolvedScanner, ScanContext, ScannerOutcome } from '../types.ts'
 import { copySubject, digestTree, inventory, LOCAL_SKIPPED_DIRS } from './quarantine.ts'
 import { resolveExecutable } from './runner.ts'
 import { rule } from './score.ts'
@@ -31,6 +31,8 @@ export interface ScanRequest {
   readonly config: AirlockConfig
   /** Every scanner to run, in report order. */
   readonly scanners: readonly ResolvedScanner[]
+  /** The LLM bridge the scanners' judges use, when one is running. */
+  readonly llm?: ScanContext['llm']
   /** Parent of the quarantine directory; the system temporary directory when absent. */
   readonly tmpRoot?: string
 }
@@ -104,7 +106,10 @@ export async function scanPackage(request: ScanRequest): Promise<ScanResult> {
       }
       let outcome: ScannerOutcome
       try {
-        outcome = await scanner.run({ subject, promptsRoot, fetchDir, outDir, inventory: found, config: request.config, signal: request.signal, executable: executable ?? '' })
+        outcome = await scanner.run({
+          subject, promptsRoot, fetchDir, outDir, inventory: found, config: request.config, signal: request.signal, executable: executable ?? '',
+          ...request.llm === undefined ? {} : { llm: request.llm },
+        })
         // An adapter reports under its own id, whatever it returned.
         outcome = { ...outcome, id }
       } catch (error) {
@@ -117,7 +122,8 @@ export async function scanPackage(request: ScanRequest): Promise<ScanResult> {
     const extra = [...found.configFindings, ...symlinks.map(link => ({
       source: 'airlock', severity: 'low' as const, category: 'symlink', title: 'Symbolic link was not scanned', file: link, dependency: false, dedupeKey: `symlink:${link}`,
     }))]
-    const ruling = rule([...outcomes, { id: 'airlock', status: 'clean', findings: extra, durationMs: 0, usedLlm: false }], request.config.policy)
+    const llmApplicable = found.skills.length + found.prompts.length + found.mcpTools > 0
+    const ruling = rule([...outcomes, { id: 'airlock', status: 'clean', findings: extra, durationMs: 0, usedLlm: false }], request.config.policy, llmApplicable, request.llm !== undefined)
     const kept = ruling.findings.slice(0, request.config.maxFindings)
     const report: InstallGateReport = {
       digest, spec: request.spec, packageName: name, ...version === undefined ? {} : { version },

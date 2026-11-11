@@ -11,7 +11,9 @@ import type { AirlockT } from './SecurityScore.tsx'
 
 const SEVERITIES: readonly InstallGateSeverity[] = ['critical', 'high', 'medium', 'low', 'info']
 
-type Loaded = { settings: AirlockSettings; effective: AirlockConfig; scanners: AirlockScannerInfo[] }
+type Model = Awaited<ReturnType<AirlockApi['models']>>[number]
+
+type Loaded = { settings: AirlockSettings; effective: AirlockConfig; scanners: AirlockScannerInfo[]; models: Model[] }
 
 /** A blank custom scanner row. */
 function blankScanner(index: number): CustomScanner {
@@ -38,8 +40,8 @@ export function Settings({ view, api, t }: { readonly view: 'summary' | 'page'; 
 
   const load = useCallback(async () => {
     try {
-      const [{ settings, effective }, scanners] = await Promise.all([api.settings(), api.scanners()])
-      setLoaded({ settings, effective, scanners })
+      const [{ settings, effective }, scanners, models] = await Promise.all([api.settings(), api.scanners(), api.models()])
+      setLoaded({ settings, effective, scanners, models })
       setDraft(settings)
     } catch (error) {
       setStatus({ kind: 'error', text: t('loadFailed', { reason: message(error) }) })
@@ -196,6 +198,7 @@ export function Settings({ view, api, t }: { readonly view: 'summary' | 'page'; 
           {severitySelect(policy.blockSeverity, value => { setPolicy({ blockSeverity: value }) }, t('blockSeverity'))}
           {severitySelect(policy.dependencyBlockSeverity, value => { setPolicy({ dependencyBlockSeverity: value }) }, t('dependencyBlockSeverity'))}
           {severitySelect(policy.reviewSeverity, value => { setPolicy({ reviewSeverity: value }) }, t('reviewSeverity'))}
+          {severitySelect(policy.availabilitySeverity, value => { setPolicy({ availabilitySeverity: value }) }, t('availabilitySeverity'))}
         </div>
         {switchRow(policy.requireLlm, next => { setPolicy({ requireLlm: next }) }, t('requireLlm'))}
       </section>
@@ -203,12 +206,28 @@ export function Settings({ view, api, t }: { readonly view: 'summary' | 'page'; 
       <section className="airlock-block">
         <h4 className="airlock-block-title">{t('llmHeading')}</h4>
         {switchRow(llm.enabled, next => { setLlm({ enabled: next }) }, t('llmEnabled'))}
-        <div className="airlock-grid">
-          {textField(llm.provider, value => { setLlm({ provider: value }) }, t('llmProvider'))}
-          {textField(llm.model, value => { setLlm({ model: value }) }, t('llmModel'))}
-          {textField(llm.baseUrl, value => { setLlm({ baseUrl: value }) }, t('llmBaseUrl'))}
-          {textField(llm.apiKeyEnv, value => { setLlm({ apiKeyEnv: value }) }, t('llmKeyEnv'))}
-        </div>
+        {loaded.models.length === 0
+          ? <p className="airlock-meta" role="status">{t('llmModelsEmpty')}</p>
+          : (
+            <label className="airlock-field">
+              <span>{t('llmModel')}</span>
+              <select data-airlock-model="" value={llm.model === '' ? '' : `${llm.provider}\u0000${llm.model}`}
+                onChange={(event) => {
+                  const [provider = '', model = ''] = event.currentTarget.value.split('\u0000')
+                  setLlm({ provider, model, ...model === '' ? {} : { enabled: true } })
+                }}>
+                <option value="">{t('llmModelNone')}</option>
+                {[...new Set(loaded.models.map(model => model.provider))].map(provider => (
+                  <optgroup key={provider} label={loaded.models.find(model => model.provider === provider)?.providerName ?? provider}>
+                    {loaded.models.filter(model => model.provider === provider).map(model => (
+                      <option key={model.id} value={`${model.provider}\u0000${model.id}`}>{model.name}</option>
+                    ))}
+                  </optgroup>
+                ))}
+              </select>
+            </label>
+          )}
+        {llm.enabled && llm.model === '' ? <p className="airlock-meta" role="alert">{t('llmModelRequired')}</p> : null}
         <p className="airlock-meta">{t('llmHint')}</p>
       </section>
 

@@ -68,16 +68,100 @@ function text(value: unknown): string | undefined {
   return typeof value === 'string' && value !== '' ? value : undefined
 }
 
-function llmEnv(config: AirlockConfig, prefix: 'SKILL_SCANNER_LLM' | 'MCP_SCANNER_LLM'): Record<string, string> | undefined {
-  if (!config.llm.enabled) return undefined
-  const key = process.env[config.llm.apiKeyEnv]
-  if (key === undefined || key === '') return undefined
+/** The model name one scanner's judge sends, so the bridge counts its answers apart from other scanners'. */
+function judgeModel(prefix: 'SKILL_SCANNER_LLM' | 'MCP_SCANNER_LLM'): string {
+  return prefix === 'SKILL_SCANNER_LLM' ? 'airlock-judge-skill' : 'airlock-judge-mcp'
+}
+
+function llmEnv(ctx: ScanContext, prefix: 'SKILL_SCANNER_LLM' | 'MCP_SCANNER_LLM'): Record<string, string> | undefined {
+  if (ctx.llm === undefined) return undefined
+  // Both scanners speak the OpenAI chat API through LiteLLM; the bridge answers for the selected DSH model.
   return {
-    [`${prefix}_API_KEY`]: key,
-    ...config.llm.model === '' ? {} : { [`${prefix}_MODEL`]: config.llm.model },
-    ...config.llm.baseUrl === '' ? {} : { [`${prefix}_BASE_URL`]: config.llm.baseUrl },
-    ...prefix === 'SKILL_SCANNER_LLM' ? { SKILL_SCANNER_LLM_PROVIDER: config.llm.provider } : {},
+    [`${prefix}_API_KEY`]: ctx.llm.apiKey,
+    [`${prefix}_MODEL`]: `openai/${judgeModel(prefix)}`,
+    [`${prefix}_BASE_URL`]: ctx.llm.baseUrl,
+    ...prefix === 'SKILL_SCANNER_LLM' ? { SKILL_SCANNER_LLM_PROVIDER: 'openai-compatible' } : {},
   }
+}
+
+/** CWEs whose weakness is resource exhaustion or crashing, not data or code. */
+const AVAILABILITY_CWES = new Set(['CWE-400', 'CWE-770', 'CWE-1333', 'CWE-674', 'CWE-835', 'CWE-789', 'CWE-407', 'CWE-1050', 'CWE-834', 'CWE-409', 'CWE-776'])
+
+/** CWEs whose weakness lets an attacker change behavior or run code. */
+const INTEGRITY_CWES = new Set(['CWE-94', 'CWE-77', 'CWE-78', 'CWE-1321', 'CWE-502', 'CWE-913', 'CWE-915', 'CWE-22', 'CWE-79', 'CWE-89', 'CWE-918'])
+
+/** What a dependency advisory can do, read from its CVSS vectors, else its CWEs. */
+export type AdvisoryImpact = 'availability' | 'confidentiality' | 'integrity' | 'unknown'
+
+/**
+ * Classify an advisory by impact. A CVSS vector whose confidentiality and integrity impacts are none (v3 `C:N/I:N`,
+ * v4 `VC:N/VI:N/SC:N/SI:N`) is availability-only; an integrity impact wins over confidentiality.
+ * @param vectors CVSS vector strings from every source.
+ * @param cwes CWE ids.
+ * @returns The impact class.
+ */
+export function advisoryImpact(vectors: readonly string[], cwes: readonly string[]): AdvisoryImpact {
+  let confidentiality = false
+  let integrity = false
+  let availability = false
+  let read = false
+  for (const vector of vectors) {
+    const metrics = new Map(vector.split('/').map(part => part.split(':') as [string, string]))
+    const pick = (...keys: string[]): boolean | undefined => {
+      const values = keys.map(key => metrics.get(key)).filter((value): value is string => value !== undefined)
+      return values.length === 0 ? undefined : values.some(value => value !== 'N')
+    }
+    const c = pick('C', 'VC', 'SC')
+    const i = pick('I', 'VI', 'SI')
+    const a = pick('A', 'VA', 'SA')
+    if (c === undefined && i === undefined && a === undefined) continue
+    read = true
+    confidentiality ||= c === true
+    integrity ||= i === true
+    availability ||= a === true
+  }
+  if (read) return integrity ? 'integrity' : confidentiality ? 'confidentiality' : availability ? 'availability' : 'unknown'
+  if (cwes.some(cwe => INTEGRITY_CWES.has(cwe))) return 'integrity'
+  if (cwes.length > 0 && cwes.every(cwe => AVAILABILITY_CWES.has(cwe))) return 'availability'
+  return 'unknown'
+}
+
+const IMPACT_CATEGORIES: Readonly<Record<AdvisoryImpact, string>> = {
+  availability: 'denial-of-service', confidentiality: 'data-exposure', integrity: 'integrity', unknown: 'vulnerability',
+}
+
+const SEVERITY_ORDER: readonly InstallGateSeverity[] = ['critical', 'high', 'medium', 'low', 'info']
+
+/**
+ * The category and severity a dependency advisory is reported with: availability-only advisories are capped at the
+ * policy's availability severity.
+ * @param severity The advisory's CVSS severity.
+ * @param impact Its impact class.
+ * @param config Airlock configuration.
+ * @returns Category and severity.
+ */
+export function advisory(severity: InstallGateSeverity, impact: AdvisoryImpact, config: AirlockConfig): { category: string; severity: InstallGateSeverity } {
+  const capped = impact === 'availability' && SEVERITY_ORDER.indexOf(severity) < SEVERITY_ORDER.indexOf(config.policy.availabilitySeverity)
+    ? config.policy.availabilitySeverity : severity
+  return { category: IMPACT_CATEGORIES[impact], severity: capped }
+}
+
+/**
+ * The JSON array a tool printed among log lines: LiteLLM writes its own notices to stdout when a model call fails.
+ * @param stdout The tool's output.
+ * @returns The parsed array.
+ * @throws {SyntaxError} When no line starts a parsable array.
+ */
+export function jsonArrayIn(stdout: string): unknown {
+  try { return JSON.parse(stdout) }
+  catch (error) { void error } // Mixed output; look for the array below.
+  const end = stdout.lastIndexOf(']')
+  for (let start = stdout.indexOf('['); start !== -1 && start < end; start = stdout.indexOf('\n[', start + 1)) {
+    const from = stdout[start] === '\n' ? start + 1 : start
+    try { return JSON.parse(stdout.slice(from, end + 1)) }
+    catch (error) { void error } // Not this bracket; try the next line that opens one.
+  }
+  throw new SyntaxError('no JSON array in the output')
 }
 
 /** Cisco Skill Scanner over the package's skills and the extracted prompts. */
@@ -88,7 +172,7 @@ async function ciscoSkillScanner(ctx: ScanContext): Promise<ScannerOutcome> {
     ...ctx.inventory.prompts.length > 0 ? [{ dir: ctx.promptsRoot, label: 'prompts' }] : [],
   ]
   if (roots.length === 0) return { id: 'cisco-skill-scanner', status: 'not-applicable', findings: [], durationMs: 0, usedLlm: false }
-  const env = llmEnv(ctx.config, 'SKILL_SCANNER_LLM')
+  const env = llmEnv(ctx, 'SKILL_SCANNER_LLM')
   const findings: ScannedFinding[] = []
   for (const [index, root] of roots.entries()) {
     const out = join(ctx.outDir, `cisco-skill-scanner-${index}.json`)
@@ -116,7 +200,12 @@ async function ciscoSkillScanner(ctx: ScanContext): Promise<ScannerOutcome> {
       }
     }
   }
-  return settled('cisco-skill-scanner', findings, started, env !== undefined)
+  // A failed LLM pass is reported as an info finding; it means the judge did not run, so it never counts toward a pass.
+  const llmFailed = findings.some(finding => finding.title.startsWith('LLM analysis failed'))
+    || (env !== undefined && (ctx.llm?.calls(judgeModel('SKILL_SCANNER_LLM')) ?? 0) === 0)
+  const kept = findings.filter(finding => !finding.title.startsWith('LLM analysis failed'))
+  const outcome = settled('cisco-skill-scanner', kept, started, env !== undefined && !llmFailed)
+  return llmFailed ? { ...outcome, detail: 'the LLM judge did not answer in the expected format; static and behavioral analysis ran' } : outcome
 }
 
 /** SkillScan audit over each skill file and extracted prompt. */
@@ -156,8 +245,10 @@ async function skillscan(ctx: ScanContext): Promise<ScannerOutcome> {
 async function ciscoMcpScanner(ctx: ScanContext): Promise<ScannerOutcome> {
   const started = Date.now()
   if (ctx.inventory.mcpToolFiles.length === 0) return { id: 'cisco-mcp-scanner', status: 'not-applicable', findings: [], durationMs: 0, usedLlm: false }
-  const env = llmEnv(ctx.config, 'MCP_SCANNER_LLM')
+  const env = llmEnv(ctx, 'MCP_SCANNER_LLM')
   const findings: ScannedFinding[] = []
+  // The LLM counts as run only when every tool got a verdict from it; `UNKNOWN` is a failed call.
+  let llmAnswered = env !== undefined
   for (const file of ctx.inventory.mcpToolFiles) {
     const run = await runScanner({
       argv: [ctx.executable, '--analyzers', env === undefined ? 'yara' : 'yara,llm', '--raw', 'static', '--tools', join(ctx.subject, file)],
@@ -165,15 +256,18 @@ async function ciscoMcpScanner(ctx: ScanContext): Promise<ScannerOutcome> {
     }, ctx.config.searchPaths)
     if (run.timedOut || run.exitCode !== 0) return failed('cisco-mcp-scanner', run, started, 'mcp-scanner')
     let results: unknown[]
-    try { results = list(JSON.parse(run.stdout)) }
+    try { results = list(jsonArrayIn(run.stdout)) }
     catch (error) { void error; return failed('cisco-mcp-scanner', run, started, 'mcp-scanner printed no JSON and') }
     for (const item of results) {
       const result = record(item)
       if (result.status !== 'completed' || result.is_safe === null) {
         return { id: 'cisco-mcp-scanner', status: 'error', findings: [], detail: clip(`analysis of ${text(result.tool_name) ?? 'a tool'} did not complete`), durationMs: Date.now() - started, usedLlm: false }
       }
+      const llm = record(record(result.findings).llm_analyzer)
+      if (String(llm.severity ?? 'UNKNOWN').toUpperCase() === 'UNKNOWN') llmAnswered = false
       for (const [analyzer, value] of Object.entries(record(result.findings))) {
         const analysis = record(value)
+        if (String(analysis.severity).toUpperCase() === 'UNKNOWN') continue
         if (severityOf(analysis.severity) === 'info') continue
         const tool = text(result.tool_name) ?? '?'
         const threats = list(analysis.threat_names).filter(name => typeof name === 'string').join(', ')
@@ -185,7 +279,10 @@ async function ciscoMcpScanner(ctx: ScanContext): Promise<ScannerOutcome> {
       }
     }
   }
-  return settled('cisco-mcp-scanner', findings, started, env !== undefined)
+  // The scanner reports SAFE from its LLM analyzer even when the call failed, so only answered calls count.
+  if (env !== undefined && (ctx.llm?.calls(judgeModel('MCP_SCANNER_LLM')) ?? 0) === 0) llmAnswered = false
+  const outcome = settled('cisco-mcp-scanner', findings, started, llmAnswered)
+  return env !== undefined && !llmAnswered ? { ...outcome, detail: 'the LLM judge did not answer; YARA analysis ran' } : outcome
 }
 
 /** OSV-Scanner over the quarantine lockfile, which pins every transitive dependency. */
@@ -217,10 +314,14 @@ async function osvScanner(ctx: ScanContext): Promise<ScannerOutcome> {
         const vuln = vulns.get(first) ?? {}
         const aliases = [...ids, ...list(group.aliases).filter((id): id is string => typeof id === 'string')]
         const cve = aliases.find(id => id.startsWith('CVE-')) ?? first
+        const vectors = ids.flatMap(id => list(record(vulns.get(id)).severity).map(item => text(record(item).score) ?? ''))
+        const cwes = ids.flatMap(id => list(record(record(vulns.get(id)).database_specific).cwe_ids).filter((cwe): cwe is string => typeof cwe === 'string'))
+        const rated = advisory(cvssSeverity(text(group.max_severity)), advisoryImpact(vectors, cwes), ctx.config)
         findings.push({
-          source: 'osv-scanner', severity: cvssSeverity(text(group.max_severity)), category: 'vulnerability',
+          source: 'osv-scanner', ...rated,
           title: clip(`${name}: ${first}${text(vuln.summary) === undefined ? '' : ` ${text(vuln.summary)}`}`), ruleId: first,
           file: 'pnpm-lock.yaml', dependency: true, dedupeKey: `vuln:${name}:${cve}`,
+          aliasKeys: aliases.map(id => `vuln:${name}:${id}`),
         })
       }
     }
@@ -252,8 +353,10 @@ async function trivy(ctx: ScanContext): Promise<ScannerOutcome> {
         const vuln = record(item)
         const name = `${text(vuln.PkgName) ?? '?'}@${text(vuln.InstalledVersion) ?? '?'}`
         const id = text(vuln.VulnerabilityID) ?? '?'
+        const vectors = Object.values(record(vuln.CVSS)).flatMap(item => [text(record(item).V3Vector), text(record(item).V40Vector)]).filter((value): value is string => value !== undefined)
+        const cwes = list(vuln.CweIDs).filter((cwe): cwe is string => typeof cwe === 'string')
         findings.push({
-          source: 'trivy', severity: severityOf(vuln.Severity), category: 'vulnerability',
+          source: 'trivy', ...advisory(severityOf(vuln.Severity), advisoryImpact(vectors, cwes), ctx.config),
           title: clip(`${name}: ${id}${text(vuln.Title) === undefined ? '' : ` ${text(vuln.Title)}`}`), ruleId: id,
           file: 'pnpm-lock.yaml', dependency: true, dedupeKey: `vuln:${name}:${id}`,
         })
@@ -262,8 +365,9 @@ async function trivy(ctx: ScanContext): Promise<ScannerOutcome> {
         const secret = record(item)
         const line = typeof secret.StartLine === 'number' ? secret.StartLine : undefined
         const ruleId = text(secret.RuleID)
+        if (ruleId !== undefined && GENERIC_SECRET_RULES.has(ruleId) && await cssModuleEntry(ctx, target, line)) continue
         findings.push({
-          source: 'trivy', severity: severityOf(secret.Severity), category: 'secret',
+          source: 'trivy', severity: secretSeverity(ruleId, severityOf(secret.Severity)), category: 'secret',
           title: clip(`Embedded secret: ${text(secret.Title) ?? ruleId ?? 'credential'}`), ...ruleId === undefined ? {} : { ruleId },
           file: target, ...line === undefined ? {} : { line }, dependency: false, dedupeKey: `secret:${target}:${line ?? ''}`,
         })
@@ -298,13 +402,45 @@ async function gitleaks(ctx: ScanContext): Promise<ScannerOutcome> {
     const file = relative(ctx.subject, text(leak.File) ?? '')
     const line = typeof leak.StartLine === 'number' ? leak.StartLine : undefined
     const ruleId = text(leak.RuleID)
+    if (ruleId !== undefined && GENERIC_SECRET_RULES.has(ruleId) && await cssModuleEntry(ctx, file, line)) continue
     findings.push({
-      source: 'gitleaks', severity: 'high', category: 'secret',
+      source: 'gitleaks', severity: secretSeverity(ruleId, 'high'), category: 'secret',
       title: clip(`Embedded secret: ${text(leak.Description) ?? ruleId ?? 'credential'}`), ...ruleId === undefined ? {} : { ruleId },
       file, ...line === undefined ? {} : { line }, dependency: false, dedupeKey: `secret:${file}:${line ?? ''}`,
     })
   }
   return settled('gitleaks', findings, started, false)
+}
+
+/** Rules that guess a secret from a name and entropy alone, rather than a provider's key format. */
+const GENERIC_SECRET_RULES = new Set(['generic-api-key', 'generic-secret', 'generic-password'])
+
+/** A CSS Modules class map entry: `"name": "<hash>_name"`, which generic secret rules mistake for a key. */
+const CSS_MODULE_ENTRY = /["']?([A-Za-z][\w-]*)["']?\s*:\s*["']([A-Za-z0-9]{4,10})_\1["']/
+
+/**
+ * Whether a secret finding is a known false positive: a CSS Modules class map entry on the reported line.
+ * @param ctx Scan context, to read the subject file.
+ * @param file File relative to the subject.
+ * @param line One-based line.
+ * @returns True when the line is a class map entry.
+ */
+async function cssModuleEntry(ctx: ScanContext, file: string, line: number | undefined): Promise<boolean> {
+  if (line === undefined) return false
+  let text: string
+  try { text = await readFile(join(ctx.subject, file), 'utf8') }
+  catch (error) { void error; return false } // An unreadable file keeps the finding.
+  return CSS_MODULE_ENTRY.test(text.split('\n')[line - 1] ?? '')
+}
+
+/**
+ * The severity of a secret finding: a provider-specific rule is high; a generic guess needs review only.
+ * @param ruleId The scanner rule.
+ * @param reported The scanner's own severity, when it has one.
+ * @returns Normalized severity.
+ */
+function secretSeverity(ruleId: string | undefined, reported: InstallGateSeverity): InstallGateSeverity {
+  return ruleId !== undefined && GENERIC_SECRET_RULES.has(ruleId) ? 'medium' : reported
 }
 
 /** Every adapter by scanner id. */

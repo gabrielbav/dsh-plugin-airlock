@@ -38,10 +38,10 @@ export const DEFAULT_CONFIG: AirlockConfig = {
   promptMinChars: 80,
   maxJsonBytes: 1024 * 1024,
   policy: {
-    passScore: 85, blockScore: 40, blockSeverity: 'critical', dependencyBlockSeverity: 'critical', reviewSeverity: 'medium',
+    passScore: 85, blockScore: 40, blockSeverity: 'critical', dependencyBlockSeverity: 'critical', reviewSeverity: 'medium', availabilitySeverity: 'low',
     weights: { critical: 50, high: 25, medium: 10, low: 3, info: 0 }, dependencyWeight: 0.5, requireLlm: true,
   },
-  llm: { enabled: false, provider: 'openai-compatible', model: '', baseUrl: '', apiKeyEnv: 'DEEPSEEK_API_KEY' },
+  llm: { enabled: false, provider: '', model: '' },
   installCommands: {
     'cisco-skill-scanner': ['uv', 'tool', 'install', 'cisco-ai-skill-scanner'],
     'skillscan': ['uv', 'tool', 'install', '--python', '3.12', 'skillscan'],
@@ -153,6 +153,7 @@ export function parseSettings(value: unknown): AirlockSettings {
       ...pick(policy, 'blockSeverity', value => severity(value, 'critical', 'policy.blockSeverity')),
       ...pick(policy, 'dependencyBlockSeverity', value => severity(value, 'critical', 'policy.dependencyBlockSeverity')),
       ...pick(policy, 'reviewSeverity', value => severity(value, 'medium', 'policy.reviewSeverity')),
+      ...pick(policy, 'availabilitySeverity', value => severity(value, 'low', 'policy.availabilitySeverity')),
       ...pick(policy, 'dependencyWeight', value => num(value, 0, 'policy.dependencyWeight', 0, 10)),
       ...pick(policy, 'requireLlm', value => bool(value, true, 'policy.requireLlm')),
     },
@@ -160,8 +161,6 @@ export function parseSettings(value: unknown): AirlockSettings {
       ...pick(llm, 'enabled', value => bool(value, false, 'llm.enabled')),
       ...pick(llm, 'provider', value => str(value, '', 'llm.provider')),
       ...pick(llm, 'model', value => str(value, '', 'llm.model')),
-      ...pick(llm, 'baseUrl', value => str(value, '', 'llm.baseUrl')),
-      ...pick(llm, 'apiKeyEnv', value => str(value, '', 'llm.apiKeyEnv', true)),
     },
   }
 }

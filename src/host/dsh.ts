@@ -77,12 +77,43 @@ export interface FetchRoute {
   readonly fetch: (request: Request) => Promise<Response>
 }
 
+/** One model the DSH model catalog offers, as the chat's model selector lists it. */
+export interface LlmModelInfo {
+  readonly provider: string
+  readonly id: string
+  readonly name: string
+  readonly description?: string
+}
+
+/** One chunk of a DSH model stream; Airlock reads text and the terminal result only. */
+export type LlmStreamChunk =
+  | { readonly type: 'text-delta'; readonly text: string }
+  | { readonly type: 'finish'; readonly reason: { readonly kind: string; readonly failure?: { readonly message?: string } } }
+  | { readonly type: string }
+
+/** The DSH model-call service (`@deepseek-ai/dsh-llm`), as far as Airlock uses it. */
+export interface LlmService {
+  listProviders(): readonly { readonly id: string; readonly name: string }[]
+  listModels(provider: string): Promise<readonly LlmModelInfo[]>
+  stream(options: {
+    provider: string
+    model: string
+    system?: string
+    messages: { role: 'user'; content: { type: 'text'; text: string }[] }[]
+    maxTokens?: number
+    temperature?: number
+    signal?: AbortSignal
+  }): AsyncIterable<LlmStreamChunk>
+}
+
 /** The Cordis context members the Host half uses. */
 export interface HostContext {
   readonly pluginManager: { registerInstallGate(gate: InstallGate): () => void }
   readonly profileContext: { readonly dir: string }
   readonly logger: { warn(...args: unknown[]): void; info(...args: unknown[]): void }
   readonly reflect: { provide(name: string, value: unknown): () => void }
+  /** Optional services; `llm` is the model-call service when the profile mounts it. */
+  get(name: 'llm'): LlmService | undefined
   effect(execute: () => () => void | Promise<void>, label?: string): void
   inject(names: readonly string[], callback: (ctx: HostContext & { readonly connection: { fetch: { register(route: FetchRoute): () => void } } }) => void): void
 }

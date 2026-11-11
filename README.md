@@ -29,7 +29,14 @@ Airlock is one install gate built on DeepSeek Harness's generic install-gate hoo
 | [Trivy](https://trivy.dev) | the lockfile, and the package files | vulnerabilities, secrets, misconfigurations |
 | [Gitleaks](https://github.com/gitleaks/gitleaks) | the package files | embedded credentials |
 
-Airlock itself also reports configuration that runs JavaScript when it loads (`!!js`) and declared MCP server commands.
+Airlock itself also reports configuration that runs JavaScript when it loads (`!!js`, informational: plugin code runs with full permissions anyway) and declared MCP server commands.
+
+**How findings are rated, with security first:**
+- **Dependency advisories are rated by impact.** The impact is read from the advisory's CVSS vector, and from its CWE when there is no vector. A denial-of-service-only advisory (it can slow or crash, but cannot read data or run code) is capped at **Low** by default. Advisories that affect data or integrity keep their rating and are labelled "Data exposure" or "Integrity or code execution". The same advisory reported by OSV and Trivy counts once.
+- **Secrets:** provider-specific rules (GitHub, Stripe, AWS…) are High. The generic name-and-entropy rule is Medium. Compiled CSS-module class maps (`"popKey": "d2hvtW_popKey"`) are recognized and dropped.
+- **The LLM requirement** applies only when the package has skills, prompts or MCP tools for the judge to read.
+
+The card opens with **What was checked**: one line per security area, saying whether it passed, what was found, or why it didn't apply. For example, "This package has no skills or subagent prompts".
 
 After the real installation, Airlock checks that the installed files are exactly the ones it scanned; any difference rolls the installation back.
 
@@ -66,7 +73,7 @@ Open **Plugins → Airlock**. Settings are saved in `<profile>/.airlock/settings
 - **Scanners:** status and path of each scanner, an on/off switch, and **Install** for a missing one.
 - **Custom SARIF scanners:** add any tool that writes a [SARIF](https://sarifweb.azurewebsites.net/) report. In the arguments, `{target}` is the scanned directory and `{output}` a report file; without `{output}`, the report is read from standard output. Choose whether it scans the package files or the dependency lockfile. Example for Semgrep: command `semgrep`, arguments `scan`, `--sarif`, `--output`, `{output}`, `{target}`.
 - **Policy:** pass and block scores, which severity blocks package findings and dependency vulnerabilities, from which severity a review is needed, and whether a pass requires the LLM analysis.
-- **LLM judge:** turn on the Cisco scanners' LLM analysis. Set the provider (`openai-compatible`, `openai` or `anthropic`), model, base URL, and the name of the Host environment variable that holds the key; only that variable is passed to the scanners. Without an LLM, the best possible result is a review, unless you turn off "Require LLM analysis to pass".
+- **LLM judge:** turn on the Cisco scanners' LLM analysis and pick a model from the same list as the chat's model selector. Airlock answers the scanners through a private, token-protected endpoint on `127.0.0.1` that forwards to the chosen DSH model, so subscription logins work and there are no keys or URLs to set. A judge that fails or answers in the wrong format counts as not run, never as clean.
 
 The same fields can be set in `cordis.yml` on the `airlock` row; saved settings override them. Row-only fields: `searchPaths`, `scannerTimeoutMs`, `maxFindings`, `promptMinChars`, `maxJsonBytes`, `policy.weights`, `installCommands`, `installTimeoutMs`.
 

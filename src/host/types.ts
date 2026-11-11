@@ -46,20 +46,27 @@ export interface AirlockPolicy {
   readonly dependencyBlockSeverity: InstallGateSeverity
   /** Any finding at or above this severity requires review. */
   readonly reviewSeverity: InstallGateSeverity
+  /**
+   * The highest severity a dependency advisory keeps when it can only affect availability (denial of service, memory or
+   * CPU exhaustion) and cannot expose data or change behavior.
+   */
+  readonly availabilitySeverity: InstallGateSeverity
   readonly weights: Readonly<Record<InstallGateSeverity, number>>
   readonly dependencyWeight: number
   /** Without the LLM analyzers a package cannot pass; it is reviewed at best. */
   readonly requireLlm: boolean
 }
 
-/** The LLM judge used by Cisco Skill Scanner and Cisco MCP Scanner. */
+/**
+ * The LLM judge used by Cisco Skill Scanner and Cisco MCP Scanner: one model from the DSH model catalog, reached
+ * through Airlock's local bridge, so no key or URL is configured here.
+ */
 export interface AirlockLlmConfig {
   readonly enabled: boolean
+  /** DSH provider route, as the chat's model selector lists it. */
   readonly provider: string
+  /** Model id within that provider. */
   readonly model: string
-  readonly baseUrl: string
-  /** Name of the Host environment variable that holds the API key; only this variable reaches the scanners. */
-  readonly apiKeyEnv: string
 }
 
 /** Effective configuration: Cordis config with the person's saved settings applied on top. */
@@ -105,6 +112,8 @@ export interface ScannedFinding extends InstallGateFinding {
   readonly dependency: boolean
   /** Equal keys from different scanners count once. */
   readonly dedupeKey: string
+  /** Further keys naming the same issue, such as a vulnerability's CVE and GHSA aliases; any shared key counts once. */
+  readonly aliasKeys?: readonly string[]
 }
 
 /** Everything one scanner reads. */
@@ -122,6 +131,13 @@ export interface ScanContext {
   readonly signal: AbortSignal
   /** The resolved executable of this scanner; empty for a scanner that names no command. */
   readonly executable: string
+  /** The running LLM bridge, when the judge is on and its model is available. */
+  readonly llm?: {
+    readonly baseUrl: string
+    readonly apiKey: string
+    /** Model replies the bridge sent for one model name. */
+    readonly calls: (model: string) => number
+  }
 }
 
 /**
