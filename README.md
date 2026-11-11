@@ -73,7 +73,7 @@ When the agent installs a plugin for you, a package that needs review shows the 
 
 ## Install
 
-> **Requires a DeepSeek Harness with the install-gate hook.** The hook is a small, generic extension point that lets any plugin vet installs. It's [proposed upstream](https://github.com/deepseek-ai/deepseek-harness/discussions), and until it ships you can run DSH from [`gabrielbav/deepseek-harness@feat/install-gate`](https://github.com/gabrielbav/deepseek-harness/tree/feat/install-gate). On a DSH without the hook, Airlock refuses to load and says why.
+> **Requires a DeepSeek Harness with the install-gate hook.** The hook is a small, generic extension point that lets any plugin vet installs. It's [proposed upstream](https://github.com/deepseek-ai/deepseek-harness/discussions/12999), and until it ships you can run DSH from [`gabrielbav/deepseek-harness@feat/install-gate`](https://github.com/gabrielbav/deepseek-harness/tree/feat/install-gate). On a DSH without the hook, Airlock refuses to load and says why.
 
 **1. Install the scanners you want.** Any you skip show as *Not installed*, and the settings page can install them with one click.
 
