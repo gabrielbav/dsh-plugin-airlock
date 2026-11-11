@@ -1,0 +1,5 @@
+# Mounts Airlock's Host half when the bundle is installed into a profile. The browser half (score card, badges and
+# settings page) is discovered from the `dsh.client` declaration in package.json.
+- insert:
+    - id: airlock
+      name: dsh-plugin-airlock

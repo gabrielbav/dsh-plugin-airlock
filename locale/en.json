@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Airlock",
+    "description": "Quarantines every third-party plugin, skill and subagent, scans it with six security scanners, and shows a security score before it can be installed."
+  }
+}

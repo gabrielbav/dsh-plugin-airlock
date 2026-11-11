@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Airlock",
+    "description": "Stellt jedes Plugin, jeden Skill und jeden Subagenten von Drittanbietern unter Quarantäne, prüft sie mit sechs Sicherheitsscannern und zeigt vor der Installation eine Sicherheitsbewertung."
+  }
+}

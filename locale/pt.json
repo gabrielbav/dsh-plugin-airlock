@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Airlock",
+    "description": "Coloca em quarentena cada plugin, skill e subagente de terceiros, analisa com seis scanners de segurança e mostra uma pontuação de segurança antes da instalação."
+  }
+}

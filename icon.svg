@@ -1,0 +1,9 @@
+<svg width="36" height="36" viewBox="0 0 36 36" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <path d="M18 6L28 9.75V17.25C28 23.4 23.9 28.6 18 30C12.1 28.6 8 23.4 8 17.25V9.75L18 6ZM16.75 20.94L13.53 17.72L11.76 19.49L16.75 24.48L24.74 16.49L22.97 14.72L16.75 20.94Z" fill="url(#paint0_linear_airlock)" />
+  <defs>
+    <linearGradient id="paint0_linear_airlock" x1="8.5" y1="8" x2="28" y2="28" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#5EE6A8" />
+      <stop offset="1" stop-color="#2F8CFF" />
+    </linearGradient>
+  </defs>
+</svg>

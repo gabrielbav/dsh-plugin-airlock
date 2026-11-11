@@ -1,0 +1,78 @@
+{
+  "name": "dsh-plugin-airlock",
+  "version": "0.1.0",
+  "description": "Security install gate for DeepSeek Harness: quarantines every third-party plugin, skill and subagent, scans it with Cisco Skill Scanner, SkillScan, Cisco MCP Scanner, OSV-Scanner, Trivy and Gitleaks, and shows a security score before it can install",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/gabrielbav/dsh-plugin-airlock.git"
+  },
+  "homepage": "https://github.com/gabrielbav/dsh-plugin-airlock#readme",
+  "bugs": {
+    "url": "https://github.com/gabrielbav/dsh-plugin-airlock/issues"
+  },
+  "keywords": [
+    "deepseek-harness",
+    "dsh-plugin",
+    "security",
+    "supply-chain",
+    "skills",
+    "mcp",
+    "sarif"
+  ],
+  "type": "module",
+  "main": "lib/index.js",
+  "types": "lib/types/host/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./lib/types/host/index.d.ts",
+      "default": "./lib/index.js"
+    },
+    "./client": {
+      "default": "./lib/client.js"
+    },
+    "./package.json": "./package.json",
+    "./locale/*.json": "./locale/*.json"
+  },
+  "files": [
+    "lib",
+    "locale",
+    "icon.svg",
+    "cordis.patch.yml",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=24.9.0"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-renderer",
+        "@deepseek-ai/dsh-client-locale",
+        "@deepseek-ai/dsh-client-ui-plugin-manager"
+      ]
+    }
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json && tsdown && node scripts/wrap-client.mjs",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run",
+    "prepublishOnly": "pnpm build && pnpm test"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "@types/react": "~18.3.1",
+    "execa": "^10.0.1",
+    "react": "^18.2.0",
+    "tsdown": "^0.22.2",
+    "typescript": "^6.0.3",
+    "vitest": "^4.1.11",
+    "yaml": "^2.9.0"
+  },
+  "icon": "./icon.svg"
+}
