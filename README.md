@@ -8,6 +8,10 @@ Airlock is a security install gate for [DeepSeek Harness](https://github.com/dee
 | 🟡 **Review** | Shows the findings. On the Plugins page you tick "I reviewed these findings" and press **Install anyway**; in a conversation the agent asks you with an approval card. |
 | 🔴 **Block** | Refused. There is no override. |
 
+| Blocked | Review | Passed |
+| --- | --- | --- |
+| ![Blocked](docs/install-blocked.png) | ![Review](docs/install-review.png) | ![Passed](docs/install-passed.png) |
+
 The result follows the **worst** finding, not the average: one critical finding blocks however clean the rest is. A scanner that is missing, crashes or prints something Airlock cannot read never counts as clean.
 
 > **Requires** a DeepSeek Harness build with the plugin manager's install gate (`@deepseek-ai/dsh-plugin-manager/install-gate`), proposed upstream from [gabrielbav/deepseek-harness `feat/install-gate`](https://github.com/gabrielbav/deepseek-harness/tree/feat/install-gate). On a release without it, Airlock refuses to load and says so.
