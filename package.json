@@ -1,7 +1,7 @@
 {
   "name": "dsh-plugin-airlock",
   "version": "0.1.0",
-  "description": "Security install gate for DeepSeek Harness: quarantines every third-party plugin, skill and subagent, scans it with Cisco Skill Scanner, SkillScan, Cisco MCP Scanner, OSV-Scanner, Trivy and Gitleaks, and shows a security score before it can install",
+  "description": "Security score for every DeepSeek Harness plugin, skill and subagent: quarantine, six security scanners and an optional LLM judge check each package before it installs",
   "license": "MIT",
   "repository": {
     "type": "git",
@@ -14,11 +14,22 @@
   "keywords": [
     "deepseek-harness",
     "dsh-plugin",
+    "dsh",
     "security",
-    "supply-chain",
+    "ai-security",
+    "agent-security",
+    "llm-security",
+    "prompt-injection",
+    "supply-chain-security",
     "skills",
     "mcp",
-    "sarif"
+    "mcp-security",
+    "sarif",
+    "gitleaks",
+    "trivy",
+    "osv-scanner",
+    "skill-scanner",
+    "quarantine"
   ],
   "type": "module",
   "main": "lib/index.js",
