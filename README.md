@@ -12,15 +12,20 @@
 
 </div>
 
+> [!NOTE]
+> **New in 0.2.0: Airlock works on stock DeepSeek Harness.** You no longer need a patched DSH. Without the install-gate hook, Airlock vets the agent's installs in the chat, adds its own **Scan and install with Airlock** option to the Plugins page, and switches off anything that installed some other way without a scan. With the hook it still vets every install before it happens. See [Two levels of protection](#two-levels-of-protection).
+
 DeepSeek Harness plugins run with your permissions. They can use your shell, your files and your credentials. Third-party skills and subagent prompts can also carry **prompt injection**, **credential theft** or **data exfiltration** in plain text, so they never look like code.
 
 Airlock puts every package in a **quarantine** first. It downloads it with install scripts disabled, runs six security scanners and an optional LLM judge, and then makes the call:
 
 | | Result | What happens |
 | :-: | --- | --- |
-| 🟢 | **Passed** | Installs automatically. |
+| 🟢 | **Passed** | Installs. |
 | 🟡 | **Review needed** | You see the findings. Tick *I reviewed these findings* and press **Install anyway**, or approve the card in the chat. |
-| 🔴 | **High risk** | Blocked. Nothing was installed, and there is no override. |
+| 🔴 | **High risk** | Blocked. Nothing is installed, and there is no override. |
+
+Wherever Airlock vets an install before it happens, these rules apply. Where it can't (see [Two levels of protection](#two-levels-of-protection)), it finds the plugin afterwards and switches it off until you scan it.
 
 <table>
 <tr>
@@ -43,8 +48,8 @@ Airlock puts every package in a **quarantine** first. It downloads it with insta
 - **Nothing runs during the check.** Install scripts are disabled, MCP servers are never started, and package code is never loaded.
 - **What it checked, not just what it found.** Every report opens with a plain-language summary of each security area: passed, found, or not applicable, and why.
 - **Rated by impact, not just by severity.** A denial-of-service bug in a dependency isn't a data breach. Airlock reads each advisory's CVSS vector and rates it by what it can actually do.
-- **Tamper-proof installs.** After installing, Airlock checks that the installed files are exactly the ones it scanned. Anything else is rolled back.
-- **Everywhere you install.** It covers the Plugins page, the agent's `plugin_manager` tool in the chat, and updates.
+- **Tamper-proof installs.** After installing, Airlock checks that the installed files are exactly the ones it scanned. When Airlock installs the package itself it rolls back anything else; otherwise it switches the plugin off.
+- **Works with or without the hook.** On stock DSH it covers the chat and its own install option and audits the rest. With the install-gate hook it covers every install: the Plugins page, Discover, updates and the chat.
 
 ## What it checks
 
@@ -67,13 +72,26 @@ You don't paste an API key and there's no URL to set. Airlock forwards the scann
 
 ### In the chat too
 
-When the agent installs a plugin for you, a package that needs review shows the same report as an approval card. Green packages install, red ones are refused, and the agent never sees the findings text.
+When the agent installs a plugin for you, green packages install, red ones are refused, and the agent never sees the findings text. With the hook, a package that needs review shows the same report as an approval card. On stock DSH the card shows the score, and the full report is under **Plugins → Airlock → Recent scans**.
 
 <img src="https://raw.githubusercontent.com/gabrielbav/dsh-plugin-airlock/main/docs/chat-review.png" alt="A review approval card in the DSH chat" width="720">
 
-## Install
+## Two levels of protection
 
-> **Requires a DeepSeek Harness with the install-gate hook.** The hook is a small, generic extension point that lets any plugin vet installs. It's [proposed upstream](https://github.com/deepseek-ai/deepseek-harness/discussions/12999), and until it ships you can run DSH from [`gabrielbav/deepseek-harness@feat/install-gate`](https://github.com/gabrielbav/deepseek-harness/tree/feat/install-gate). On a DSH without the hook, Airlock refuses to load and says why.
+Airlock checks at startup whether your DSH has the **install-gate hook**, a small, generic extension point that lets any plugin vet installs. The hook is [proposed upstream](https://github.com/deepseek-ai/deepseek-harness/discussions/12999). Until it ships, you can get it from [`gabrielbav/deepseek-harness@feat/install-gate`](https://github.com/gabrielbav/deepseek-harness/tree/feat/install-gate). **Plugins → Airlock → Enforcement** shows which level you're on.
+
+| Where a plugin comes from | Stock DSH (**Standard**) | DSH with the hook (**Full enforcement**) |
+| --- | --- | --- |
+| The agent's `plugin_manager` tool in the chat | ✅ Vetted before it installs | ✅ Vetted before it installs |
+| **Add plugin → Scan and install with Airlock** | ✅ Vetted before it installs, installed switched off, checked against the scan, then switched on | Not shown: the page's own button is vetted |
+| **Add plugin → Install a third-party plugin**, Discover, updates | ⚠️ Found afterwards and switched off until you scan or trust it | ✅ Vetted before it installs |
+| `dsh plugin add` on the command line | ⚠️ Found afterwards and switched off | ⚠️ Found afterwards, or refused with `requireInstallGate` |
+
+**How the standard level works.** In the chat, Airlock checks the agent's `install_bundle` calls before the tool runs. It asks for an exact version (`name@1.2.3`) so the files it scans are the files that install. A red package is refused, and a yellow one asks you with the score. Everything else is covered by an audit that runs at startup and after every plugin change. It compares each third-party plugin's files with the ones Airlock scanned. A plugin that doesn't match gets a **Not scanned** tag and a notice on its page with **Scan now** and **Trust without scanning**, and is switched off. If you switch it back on yourself, Airlock leaves it on. The audit notices after the fact, so the plugin's install has already run once by then. Only the hook stops a package before it installs, from every path.
+
+Plugins that were already installed the first time Airlock runs are trusted as they are. Plugins linked to a local folder (`link:`) are trusted by name, because their files change every time you rebuild them. Official bundles and the ones DSH ships are never touched.
+
+## Install
 
 **1. Install the scanners you want.** Any you skip show as *Not installed*, and the settings page can install them with one click.
 
@@ -86,7 +104,7 @@ brew install osv-scanner trivy gitleaks
 
 **2. Add Airlock** in DSH: **Plugins → Add plugin → `dsh-plugin-airlock`**.
 
-**3. Recommended: make it mandatory.** Add this to `~/.dsh/profiles/<profile>/cordis.patch.yml`, so nothing installs while Airlock isn't running. `dsh plugin add` on the command line is then refused too, because the CLI can't run the check.
+**3. Optional, with the hook: make it mandatory.** Add this to `~/.dsh/profiles/<profile>/cordis.patch.yml`, so nothing installs while Airlock isn't running. `dsh plugin add` on the command line is then refused too, because the CLI can't run the check.
 
 ```yaml
 - id: plugin-manager
@@ -107,8 +125,10 @@ Open **Plugins → Airlock**. Changes apply from the next scan.
 | **Custom SARIF scanners** | Add any tool that writes SARIF. In arguments, `{target}` is the scanned folder and `{output}` the report file. Example: `semgrep` with `scan --sarif --output {output} {target}`. |
 | **Policy** | The score to pass, the score below which it blocks, which severity blocks package findings, which severity blocks dependency advisories, when to ask for review, how to rate denial-of-service-only advisories, and whether a pass needs the LLM judge |
 | **LLM judge** | On/off, and a model chosen from your DSH model list |
+| **Enforcement** | Which level you're on, a switch to stop using the hook, and what happens to plugins that install without a scan: switch them off and flag them, or only flag them |
+| **Recent scans** | Every report Airlock saved, including the packages it blocked |
 
-Settings are saved in `<profile>/.airlock/settings.json`, and the same fields work on the `airlock` row in `cordis.yml`. Reports are kept in `<profile>/.airlock/reports/`. Every scanned plugin shows a *Security N* tag and its full report on its Plugins page.
+Settings are saved in `<profile>/.airlock/settings.json`, and the same fields work on the `airlock` row in `cordis.yml`. Reports are kept in `<profile>/.airlock/reports/`, and the audit's list of trusted plugins in `<profile>/.airlock/ledger.json`. Every scanned plugin shows a *Security N* tag and its full report on its Plugins page.
 
 ## How the score works
 
@@ -140,7 +160,7 @@ export function apply(ctx) {
 
 `run` must fail closed: return `error` for anything it doesn't recognize, never `clean`.
 
-Airlock is one gate on top of DSH's generic install-gate hook. Other gates, such as publisher allow-lists, license policies, signature checks or a company approval service, can run beside it, and the strictest ruling wins.
+With the install-gate hook, Airlock is one gate on top of DSH's generic hook. Other gates, such as publisher allow-lists, license policies, signature checks or a company approval service, can run beside it, and the strictest ruling wins.
 
 ## Privacy and safety
 
@@ -152,6 +172,7 @@ Airlock is one gate on top of DSH's generic install-gate hook. Other gates, such
 
 - No scanner analyses what a plugin's JavaScript does at runtime. Add a SARIF scanner such as Semgrep for code rules.
 - Skills copied into skill folders by hand, outside the plugin manager, are not scanned.
+- Without the hook, the Plugins page's own install button, Discover and the update dialog aren't vetted before they install. Use **Scan and install with Airlock**, or get the hook.
 - An update that needs review can't be confirmed from the update dialog yet. Uninstall the plugin, then install the new version from **Add plugin**.
 - A git-hosted bundle that builds in a `prepare` script installs different files than the ones scanned, so the tamper check refuses it. Publish such bundles to npm instead.
 - The settings page is in English, Portuguese and Chinese. The security report is in all eight DSH languages.

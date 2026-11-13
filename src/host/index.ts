@@ -1,15 +1,27 @@
 /**
- * Airlock, Host half: registers an install gate with the DSH plugin manager that quarantines every third-party
- * plugin, skill and subagent bundle, scans it, and rules pass, review or block. It serves the reports, scanner status
- * and settings to the browser half over exact `/api/airlock.<endpoint>` routes, and offers `ctx.airlock` so other
- * plugins can add scanners.
+ * Airlock, Host half: quarantines every third-party plugin, skill and subagent bundle, scans it, and rules pass,
+ * review or block. It works on two tiers:
+ *
+ * - **Full enforcement**, on a DSH with the install-gate hook (`pluginManager.registerInstallGate`): every install,
+ *   from the Plugins page, the chat or an update, is vetted before the profile changes.
+ * - **Standard**, on stock DSH: the agent's `plugin_manager` installs are vetted through `tools/pre-execute`, the
+ *   Plugins page gets Airlock's own scan-first install, and an audit switches off third-party bundles that installed
+ *   some other way without a scan.
+ *
+ * It serves reports, scanner status, settings and those flows to the browser half over exact
+ * `/api/airlock.<endpoint>` routes, and offers `ctx.airlock` so other plugins can add scanners.
  */
-import { mkdir, readdir, readFile } from 'node:fs/promises'
+import { randomUUID } from 'node:crypto'
+import { mkdir, readdir, readFile, realpath } from 'node:fs/promises'
 import { join } from 'node:path'
 import { execa } from 'execa'
 import { applySettings, ConfigError, parseSettings, SCANNER_NAMES } from './config.ts'
-import type { FetchRoute, HostContext, InstallGateRequest, InstallGateVerdict, InstallGateReport, LlmModelInfo } from './dsh.ts'
-import { GATE_ID, scannerAvailability, scanPackage } from './engine/index.ts'
+import { chatGate } from './chat.ts'
+import type { BundleInfo, ChangeResult, FetchRoute, HostContext, InstallGateRequest, InstallGateVerdict, InstallGateReport, LlmModelInfo } from './dsh.ts'
+import { digestTree, GATE_ID, scannerAvailability, scanPackage } from './engine/index.ts'
+import { LOCAL_SKIPPED_DIRS } from './engine/quarantine.ts'
+import { anchorPathSpec, quarantineFetch } from './fetch.ts'
+import { audit, audited, linked, readLedger, statusOf, writeLedger, type BundleStatus, type Ledger, type TrustSource } from './ledger.ts'
 import { scannerEnv } from './engine/runner.ts'
 import { customScanner, SCANNERS } from './engine/scanners.ts'
 import { writePrivateFile } from './files.ts'
@@ -32,10 +44,16 @@ export const inject = ['pluginManager', 'profileContext']
 /** Route prefix under the connection's shared `/api` channel. */
 const PREFIX = 'airlock.'
 
+/** The fork branch that carries the install-gate hook, linked from the settings page. */
+export const HOOK_URL = 'https://github.com/gabrielbav/deepseek-harness/tree/feat/install-gate'
+
+/** How long a scan from Airlock's install dialog stays installable. */
+const SCAN_TTL_MS = 30 * 60 * 1000
+
 /** Lower-case scanner ids a plugin may register. */
 const ADAPTER_ID = /^[a-z0-9][a-z0-9-]{0,39}$/
 
-type Result = { ok: true; value: unknown } | { ok: false; error: { code: string; message: string } }
+type Result = { ok: true; value: unknown } | { ok: false; error: { code: string; message: string; details: Record<string, never> } }
 
 /** A request the browser sent with a payload Airlock refuses. */
 class BadRequest extends Error {}
@@ -87,6 +105,51 @@ export function apply(ctx: HostContext, config: AirlockConfig): void {
   ]
 
   const reportPath = (packageName: string): string => join(reportsDir, `${encodeURIComponent(packageName)}.json`)
+  const ledgerPath = join(root, 'ledger.json')
+
+  // Ledger writes run one at a time. Nothing inside this queue waits for the plugin manager, which holds its change
+  // lock while it asks the install gate, and the gate itself writes to the ledger.
+  let queue: Promise<unknown> = Promise.resolve()
+  const serial = <T>(task: () => Promise<T>): Promise<T> => {
+    const run = queue.then(task)
+    queue = run.then(() => undefined, () => undefined)
+    return run
+  }
+  let ledgerCache: Ledger | null | undefined
+  const loadLedger = async (): Promise<Ledger | null> => {
+    if (ledgerCache === undefined) ledgerCache = await readLedger(ledgerPath)
+    return ledgerCache
+  }
+  const saveLedger = async (ledger: Ledger): Promise<void> => {
+    await mkdir(root, { recursive: true, mode: 0o700 })
+    await writeLedger(ledgerPath, ledger)
+    ledgerCache = ledger
+  }
+  /** Trust one bundle's files. */
+  const trust = (name: string, digest: string | null, how: TrustSource, version?: string): Promise<void> => serial(async () => {
+    const current = await loadLedger() ?? { version: 1 as const, approved: {}, disabled: {} }
+    await saveLedger({
+      ...current,
+      approved: { ...current.approved, [name]: { digest, how, ...version === undefined ? {} : { version }, at: new Date().toISOString() } },
+    })
+  })
+  const trustReport = (report: InstallGateReport): Promise<void> => report.packageName === undefined
+    ? Promise.resolve()
+    : trust(report.packageName, report.digest, 'scan', report.version)
+
+  /** The real directory of an installed profile dependency, or null when it has none. */
+  const bundleDir = async (name: string): Promise<string | null> => {
+    try { return await realpath(join(ctx.profileContext.dir, 'node_modules', name)) }
+    catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null
+      throw error
+    }
+  }
+  const digestOf = async (bundle: BundleInfo): Promise<string | null> => {
+    if (linked(bundle)) return null
+    const dir = await bundleDir(bundle.name)
+    return dir === null ? null : digestTree(dir, LOCAL_SKIPPED_DIRS)
+  }
 
   const vet = async (request: InstallGateRequest): Promise<InstallGateVerdict> => {
     const current = await effective()
@@ -112,6 +175,152 @@ export function apply(ctx: HostContext, config: AirlockConfig): void {
       await writePrivateFile(reportPath(scanned.report.packageName), `${JSON.stringify(scanned.report, null, 2)}\n`)
     }
     return scanned
+  }
+
+  /** The install-gate hook's entry: the manager refuses blocks and asks for review itself, so only blocks go untrusted. */
+  const hookVet = async (request: InstallGateRequest): Promise<InstallGateVerdict> => {
+    const verdict = await vet(request)
+    if (verdict.report.level !== 'block') await trustReport(verdict.report)
+    return verdict
+  }
+
+  /**
+   * Quarantine and scan a spec with Airlock's own fetch, for every flow the plugin manager does not drive.
+   * @param trustUpTo The worst level whose digest is trusted right away; the rest are trusted on acknowledgement.
+   */
+  const scanSpec = async (spec: string, registry: string | null, signal: AbortSignal, trustUpTo: 'pass' | 'review'): Promise<InstallGateReport> => {
+    const current = await effective()
+    const log = (text: string, stream: 'stdout' | 'stderr'): void => { if (stream === 'stderr' && text.trim() !== '') ctx.logger.info(`airlock: ${text.trim()}`) }
+    const anchored = anchorPathSpec(spec, ctx.profileContext.cwd ?? ctx.profileContext.dir)
+    const verdict = await vet({
+      spec: anchored, registry, signal, log,
+      fetch: (dir, fetchSignal) => quarantineFetch(dir, fetchSignal, {
+        invocation: ctx.profileContext.packageManager ?? { command: 'pnpm', args: [], env: {} },
+        profileDir: ctx.profileContext.dir, cwd: ctx.profileContext.cwd ?? ctx.profileContext.dir, spec: anchored, registry,
+        timeoutMs: current.fetchTimeoutMs, onOutput: log,
+      }),
+    })
+    await verdict.dispose()
+    const report = verdict.report
+    if (report.level === 'pass' || (trustUpTo === 'review' && report.level === 'review')) await trustReport(report)
+    return report
+  }
+
+  // Install-gate hook: used when the DSH has it and the person has not turned it off.
+  const hookAvailable = typeof ctx.pluginManager.registerInstallGate === 'function'
+  let unregisterGate: (() => void) | undefined
+  const gateActive = (): boolean => unregisterGate !== undefined
+  const reconcileGate = (current: AirlockConfig): void => {
+    const want = hookAvailable && current.enforcement.useInstallGate
+    if (want && unregisterGate === undefined) unregisterGate = ctx.pluginManager.registerInstallGate?.({ id: GATE_ID, vet: hookVet })
+    if (!want && unregisterGate !== undefined) { unregisterGate(); unregisterGate = undefined }
+  }
+
+  let auditing: Promise<void> | undefined
+  let auditAgain = false
+  let disposed = false
+  const runAudit = async (): Promise<void> => {
+    const current = await effective()
+    const bundles = await ctx.pluginManager.listBundles()
+    const digests = new Map<string, string | null>()
+    for (const bundle of bundles.filter(item => audited(item, name))) digests.set(bundle.name, await digestOf(bundle))
+    const result = await serial(async () => {
+      const outcome = await audit({
+        bundles, ledger: await loadLedger(), digestOf: async bundle => digests.get(bundle.name) ?? null,
+        disable: current.enforcement.unscanned === 'disable', self: name,
+      })
+      await saveLedger(outcome.ledger)
+      return outcome
+    })
+    for (const bundle of result.bundles) {
+      if (bundle.status === 'unscanned' || bundle.status === 'changed') {
+        ctx.logger.warn(`airlock: ${bundle.name} installed without an Airlock scan (${bundle.status})${bundle.disable ? '; switched it off' : ''}`)
+      }
+      if (!bundle.disable || disposed) continue
+      const change = await ctx.pluginManager.setBundleEnabled(bundle.name, false)
+      if (change.application === 'failed') ctx.logger.warn(`airlock: could not switch off ${bundle.name}: ${change.error?.message ?? 'unknown error'}`)
+    }
+  }
+  /** Run the audit, coalescing the change events that arrive while it runs. */
+  const scheduleAudit = (): void => {
+    if (disposed) return
+    if (auditing !== undefined) { auditAgain = true; return }
+    // Off the event's own call stack: the manager emits its change event while it still holds its change lock.
+    auditing = new Promise<void>(done => { setTimeout(done, 0) }).then(runAudit).catch((error: unknown) => {
+      ctx.logger.warn('airlock: audit failed', error)
+    }).finally(() => {
+      auditing = undefined
+      if (auditAgain) { auditAgain = false; scheduleAudit() }
+    })
+  }
+
+  const bundleState = async (bundleName: string): Promise<{
+    status: BundleStatus | null; enabled: boolean; linked: boolean; disabledByAirlock: boolean
+  }> => {
+    const bundle = (await ctx.pluginManager.listBundles()).find(item => item.name === bundleName)
+    if (bundle === undefined || !audited(bundle, name)) return { status: null, enabled: bundle?.enabled ?? false, linked: false, disabledByAirlock: false }
+    const ledger = await serial(loadLedger)
+    const status = ledger === null ? 'baseline' : statusOf(ledger.approved[bundleName], await digestOf(bundle))
+    return { status, enabled: bundle.enabled, linked: linked(bundle), disabledByAirlock: !bundle.enabled && ledger?.disabled[bundleName] !== undefined }
+  }
+
+  /** Switch back on a bundle the audit switched off. */
+  const restore = async (bundleName: string): Promise<ChangeResult | null> => {
+    const state = await bundleState(bundleName)
+    return state.disabledByAirlock ? ctx.pluginManager.setBundleEnabled(bundleName, true) : null
+  }
+
+  /** Scans from Airlock's install dialog, kept until installed or expired. */
+  const scans = new Map<string, { installSpec: string; registry: string | null; report: InstallGateReport; at: number }>()
+
+  const scanForInstall = async (spec: string, registry: string | undefined, signal: AbortSignal): Promise<{ scanId: string; report: InstallGateReport }> => {
+    for (const [id, scan] of scans) if (Date.now() - scan.at > SCAN_TTL_MS) scans.delete(id)
+    const inspection = await ctx.pluginManager.inspect(spec, registry === undefined ? undefined : { registry }, signal)
+    if (inspection.status === 'refused') throw new BadRequest(inspection.reason)
+    const report = await scanSpec(spec, registry ?? inspection.registry, signal, 'pass')
+    // A registry install names the exact version scanned, so the files cannot change in between.
+    const installSpec = inspection.kind === 'registry' && report.packageName !== undefined && report.version !== undefined
+      ? `${report.packageName}@${report.version}`
+      : anchorPathSpec(spec, ctx.profileContext.cwd ?? ctx.profileContext.dir)
+    const scanId = randomUUID()
+    scans.set(scanId, { installSpec, registry: registry ?? null, report, at: Date.now() })
+    return { scanId, report }
+  }
+
+  /**
+   * Install a scanned package switched off, check that the installed files are the scanned ones, then switch it on.
+   * Files that differ are removed again.
+   */
+  const installScanned = async (scanId: string, acknowledged: string | undefined): Promise<{ result: ChangeResult }> => {
+    const scan = scans.get(scanId)
+    if (scan === undefined) throw new BadRequest('this scan expired; scan the package again')
+    const { report } = scan
+    if (report.level === 'block') throw new BadRequest('Airlock blocked this package')
+    if (report.level === 'review' && acknowledged !== report.digest) throw new BadRequest('this package needs review; acknowledge the findings first')
+    scans.delete(scanId)
+    await trustReport(report)
+    const installed = await ctx.pluginManager.installBundle(scan.installSpec, {
+      enabled: false,
+      ...scan.registry === null ? {} : { registry: scan.registry },
+      ...report.packageName !== undefined && report.version !== undefined ? { expected: { name: report.packageName, version: report.version } } : {},
+    })
+    if (installed.application === 'failed' || installed.application === 'cancelled') return { result: installed }
+    const bundleName = installed.bundle ?? report.packageName
+    if (bundleName === undefined) return { result: installed }
+    const dir = await bundleDir(bundleName)
+    if (dir === null || await digestTree(dir, LOCAL_SKIPPED_DIRS) !== report.digest) {
+      await ctx.pluginManager.removeBundle(bundleName)
+      return { result: { application: 'failed', bundle: bundleName, error: { code: 'airlock/mismatch', message: 'The installed files are not the ones Airlock scanned, so the package was removed again.' } } }
+    }
+    return { result: await ctx.pluginManager.setBundleEnabled(bundleName, true) }
+  }
+
+  const status = async () => {
+    const current = await effective()
+    return {
+      hookAvailable, gateActive: gateActive(), mode: gateActive() ? 'full' as const : 'standard' as const,
+      useInstallGate: current.enforcement.useInstallGate, unscanned: current.enforcement.unscanned, hookUrl: HOOK_URL,
+    }
   }
 
   const readReport = async (packageName: string): Promise<InstallGateReport | null> => {
@@ -178,8 +387,34 @@ export function apply(ctx: HostContext, config: AirlockConfig): void {
     return lists.flat()
   }
 
-  const dispatch = async (endpoint: string, payload: unknown): Promise<unknown> => {
+  const dispatch = async (endpoint: string, payload: unknown, signal: AbortSignal): Promise<unknown> => {
     switch (endpoint) {
+      case 'status': return status()
+      case 'scan': {
+        const registry = payloadObject(payload).registry
+        return scanForInstall(stringField(payload, 'spec').trim(), typeof registry === 'string' && registry !== '' ? registry : undefined, signal)
+      }
+      case 'install': {
+        const acknowledged = payloadObject(payload).acknowledged
+        return installScanned(stringField(payload, 'scanId'), typeof acknowledged === 'string' ? acknowledged : undefined)
+      }
+      case 'bundleStatus': return bundleState(stringField(payload, 'name'))
+      case 'scanInstalled': {
+        const bundleName = stringField(payload, 'name')
+        const dir = await bundleDir(bundleName)
+        if (dir === null) throw new BadRequest(`${bundleName} is not installed in this profile`)
+        const report = await scanSpec(dir, null, signal, 'pass')
+        if (report.level === 'pass') await restore(bundleName)
+        return { report, state: await bundleState(bundleName) }
+      }
+      case 'trust': {
+        const bundleName = stringField(payload, 'name')
+        const bundle = (await ctx.pluginManager.listBundles()).find(item => item.name === bundleName)
+        if (bundle === undefined || !audited(bundle, name)) throw new BadRequest(`${bundleName} is not a third-party bundle in this profile`)
+        await trust(bundleName, await digestOf(bundle), 'user', bundle.version)
+        await restore(bundleName)
+        return bundleState(bundleName)
+      }
       case 'models': return listModels()
       case 'report': return readReport(stringField(payload, 'name'))
       case 'reports': return listReports()
@@ -190,26 +425,37 @@ export function apply(ctx: HostContext, config: AirlockConfig): void {
         applySettings(config, settings)
         await mkdir(root, { recursive: true, mode: 0o700 })
         await writePrivateFile(settingsPath, `${JSON.stringify(settings, null, 2)}\n`)
-        return { settings, effective: await effective() }
+        const next = await effective()
+        reconcileGate(next)
+        return { settings, effective: next }
       }
       case 'installScanner': return installScanner(stringField(payload, 'id'))
       default: throw new BadRequest(`unknown endpoint ${endpoint}`)
     }
   }
 
-  const handle = async (endpoint: string, payload: unknown): Promise<Result> => {
-    try { return { ok: true, value: await dispatch(endpoint, payload) } }
+  const handle = async (endpoint: string, payload: unknown, signal: AbortSignal): Promise<Result> => {
+    try { return { ok: true, value: await dispatch(endpoint, payload, signal) } }
     catch (error) {
-      if (error instanceof BadRequest || error instanceof ConfigError) return { ok: false, error: { code: 'airlock/bad-request', message: error.message } }
+      if (error instanceof BadRequest || error instanceof ConfigError) return { ok: false, error: { code: 'airlock/bad-request', message: error.message, details: {} } }
       ctx.logger.warn('airlock: request failed', error)
-      return { ok: false, error: { code: 'airlock/failed', message: error instanceof Error ? error.message : String(error) } }
+      return { ok: false, error: { code: 'airlock/failed', message: error instanceof Error ? error.message : String(error), details: {} } }
     }
   }
 
-  if (typeof ctx.pluginManager.registerInstallGate !== 'function') {
-    throw new Error('dsh-plugin-airlock needs a DeepSeek Harness whose plugin manager supports install gates (registerInstallGate); update DSH')
-  }
-  ctx.effect(() => ctx.pluginManager.registerInstallGate({ id: GATE_ID, vet }), 'airlock: install gate')
+  // The gate is registered at once with the configured default, then follows the saved settings.
+  reconcileGate(config)
+  ctx.effect(() => () => { unregisterGate?.(); unregisterGate = undefined }, 'airlock: install gate')
+  void effective().then(reconcileGate, (error: unknown) => { ctx.logger.warn('airlock: could not read settings', error) })
+  if (!hookAvailable) ctx.logger.info('airlock: this DSH has no install-gate hook; vetting chat installs and auditing the rest (standard mode)')
+
+  ctx.effect(() => ctx.on('tools/pre-execute', (exec, next) => chatGate(exec, next, {
+    active: () => !gateActive(),
+    inspect: (spec, registry, signal) => ctx.pluginManager.inspect(spec, registry === undefined ? undefined : { registry }, signal),
+    scan: (spec, registry, signal) => scanSpec(spec, registry, signal, 'review'),
+  })), 'airlock: chat gate')
+  ctx.effect(() => ctx.on('plugin-manager/changed', () => { scheduleAudit() }), 'airlock: audit on change')
+  ctx.effect(() => { scheduleAudit(); return () => { disposed = true } }, 'airlock: audit')
 
   const service: AirlockService = {
     registerScanner(adapter) {
@@ -224,7 +470,7 @@ export function apply(ctx: HostContext, config: AirlockConfig): void {
   ctx.effect(() => ctx.reflect.provide('airlock', service), 'airlock: scanner registry')
 
   ctx.inject(['connection'], (scope) => {
-    for (const endpoint of ['report', 'reports', 'scanners', 'models', 'settings', 'saveSettings', 'installScanner']) {
+    for (const endpoint of ['report', 'reports', 'scanners', 'models', 'settings', 'saveSettings', 'installScanner', 'status', 'scan', 'install', 'bundleStatus', 'scanInstalled', 'trust']) {
       const method = `${PREFIX}${endpoint}`
       const route: FetchRoute = {
         path: `/api/${method}`, methods: ['POST'], requestBody: 'buffered',
@@ -238,8 +484,8 @@ export function apply(ctx: HostContext, config: AirlockConfig): void {
           const envelope = payloadObject(body)
           const rpcId = typeof envelope.rpcId === 'string' ? envelope.rpcId : 'invalid-request'
           const result = envelope.type !== 'client-request' || envelope.method !== method
-            ? { ok: false, error: { code: 'gateway/bad-request', message: `expected a client-request for ${method}` } }
-            : await handle(endpoint, envelope.payload ?? {})
+            ? { ok: false, error: { code: 'gateway/bad-request', message: `expected a client-request for ${method}`, details: {} } }
+            : await handle(endpoint, envelope.payload ?? {}, request.signal)
           return Response.json({ type: 'server-response', rpcId, result })
         },
       }

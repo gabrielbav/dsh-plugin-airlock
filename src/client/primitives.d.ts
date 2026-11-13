@@ -14,5 +14,19 @@ declare module '@deepseek-ai/dsh-client-ui-primitives' {
     children?: ReactNode
   } & ButtonHTMLAttributes<HTMLButtonElement> & RefAttributes<HTMLButtonElement>>
   export function Checkbox(props: { checked: boolean; onChange: (next: boolean) => void; label: string; disabled?: boolean; className?: string | undefined }): ReactNode
+  export function IconShieldOutlineRegular(props: { size?: number }): ReactNode
+  export function MenuItemButton(props: { icon?: ReactNode; disabled?: boolean; onSelect: () => void; children?: ReactNode }): ReactNode
+  export function Modal(props: {
+    open: boolean
+    onClose: () => void
+    title: string
+    closeLabel: string
+    tone?: 'warning'
+    description?: string
+    children?: ReactNode
+    footer?: ReactNode
+    className?: string
+    contentClassName?: string
+  }): ReactNode
   export function Switch(props: { checked: boolean; onChange: (next: boolean) => void; label: string; disabled?: boolean; className?: string | undefined }): ReactNode
 }

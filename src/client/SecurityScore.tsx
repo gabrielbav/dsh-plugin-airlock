@@ -137,14 +137,19 @@ function ScoreDial({ score, level }: { readonly score: number; readonly level: I
  * @param props.report - the gate's report.
  * @param props.outcome - `review` waits for acknowledgement, `blocked` was refused, `installed` finished.
  * @param props.acknowledge - repeat the installation with the report acknowledged; present only for `review`.
+ * @param props.acknowledgeLabel - the acknowledgement button's label, when it does something other than install.
  * @param props.t - translate seat.
  * @param props.resolve - localized-text resolver.
  * @returns the card.
  */
-export function SecurityScore({ report, outcome, acknowledge, t, resolve }: {
+export function SecurityScore({ report, outcome, acknowledge, acknowledgeLabel, summaryText, t, resolve }: {
   readonly report: InstallGateReport
   readonly outcome: 'review' | 'blocked' | 'installed'
   readonly acknowledge?: (() => void) | undefined
+  /** The acknowledgement button's label; "Install anyway" when absent. */
+  readonly acknowledgeLabel?: string | undefined
+  /** The sentence under the title, when the outcome's own wording does not fit. */
+  readonly summaryText?: string | undefined
   readonly t: AirlockT
   /** Pick the person's locale from a gate's localized text. */
   readonly resolve: (text: InstallGateText) => string
@@ -168,7 +173,7 @@ export function SecurityScore({ report, outcome, acknowledge, t, resolve }: {
           <Tag tone={LEVEL_TONES[report.level]}>{t(LEVEL_KEYS[report.level])}</Tag>
         </div>
       </header>
-      <p className="airlock-summary" role={outcome === 'blocked' ? 'alert' : undefined}>{t(summary)}</p>
+      <p className="airlock-summary" role={outcome === 'blocked' ? 'alert' : undefined}>{summaryText ?? t(summary)}</p>
       <p className="airlock-meta">{t('inventory', {
         skills: String(metrics.skills ?? 0), prompts: String(metrics.prompts ?? 0),
         mcpTools: String(metrics.mcpTools ?? 0), dependencies: String(metrics.dependencies ?? 0),
@@ -232,7 +237,7 @@ export function SecurityScore({ report, outcome, acknowledge, t, resolve }: {
         ? (
           <div className="airlock-acknowledge">
             <Checkbox checked={accepted} onChange={setAccepted} label={t('acknowledge')} />
-            <Button variant="primary" className="airlock-wide" disabled={!accepted} onClick={acknowledge}>{t('installAnyway')}</Button>
+            <Button variant="primary" className="airlock-wide" disabled={!accepted} onClick={acknowledge}>{acknowledgeLabel ?? t('installAnyway')}</Button>
           </div>
         )
         : null}

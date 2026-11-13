@@ -1,7 +1,8 @@
 /**
- * Type-only copies of the DeepSeek Harness interfaces Airlock uses: the plugin manager's install gate
- * (`@deepseek-ai/dsh-plugin-manager/install-gate`) and the parts of the Cordis context the Host half touches. Nothing
- * here exists at runtime, so the package loads against any DSH release that provides the install gate.
+ * Type-only copies of the DeepSeek Harness interfaces Airlock uses: the plugin manager, its optional install-gate hook
+ * (`@deepseek-ai/dsh-plugin-manager/install-gate`), the tool pre-execute event, and the parts of the Cordis context
+ * the Host half touches. Nothing here exists at runtime, so the package loads against stock DSH and against a DSH
+ * with the install-gate hook.
  */
 
 export interface InstallGateText { readonly en: string; readonly [locale: string]: string }
@@ -106,14 +107,89 @@ export interface LlmService {
   }): AsyncIterable<LlmStreamChunk>
 }
 
+/** One bundle as `pluginManager.listBundles()` reports it, as far as Airlock reads it. */
+export interface BundleInfo {
+  readonly name: string
+  readonly official: boolean
+  readonly availability: 'installation' | 'profile' | 'missing'
+  readonly version?: string
+  readonly enabled: boolean
+  readonly installed: boolean
+  /** The installation spec of a profile dependency, such as `link:/abs/dir` or `name@1.2.3`. */
+  readonly source?: string
+}
+
+/** The result of a plugin manager change, as far as Airlock reads it. */
+export interface ChangeResult {
+  readonly application: 'applied' | 'restart-required' | 'overridden' | 'failed' | 'cancelled'
+  readonly bundle?: string
+  readonly version?: string
+  readonly error?: { readonly code?: string; readonly message?: string }
+  readonly pendingBuilds?: readonly string[]
+}
+
+/** What `pluginManager.inspect` says about a spec before anything installs. */
+export type SpecInspection =
+  | {
+    readonly status: 'accepted'
+    readonly kind: 'registry' | 'path' | 'git' | 'tarball'
+    readonly name?: string
+    readonly version?: string
+    readonly bundle: boolean | null
+    readonly registry: string | null
+  }
+  | { readonly status: 'refused'; readonly problem: string; readonly reason: string }
+
+/**
+ * The DSH plugin manager (`@deepseek-ai/dsh-plugin-manager`). Everything but `registerInstallGate` ships with stock
+ * DSH; the install-gate hook adds that one method.
+ */
+export interface PluginManager {
+  registerInstallGate?(gate: InstallGate): () => void
+  listBundles(): Promise<BundleInfo[]>
+  inspect(spec: string, options?: { registry?: string }, signal?: AbortSignal): Promise<SpecInspection>
+  installBundle(spec: string, options?: {
+    enabled?: boolean
+    registry?: string
+    expected?: { readonly name: string; readonly version: string }
+    approvedBuilds?: string[]
+  }): Promise<ChangeResult>
+  setBundleEnabled(name: string, enabled: boolean): Promise<ChangeResult>
+  removeBundle(name: string): Promise<ChangeResult>
+}
+
+/** The pnpm a profile installs with, as `profileContext.packageManager` names it. */
+export interface PnpmInvocation {
+  readonly command: string
+  readonly args: readonly string[]
+  readonly env: Readonly<Record<string, string>>
+}
+
+/** One tool call as `tools/pre-execute` listeners see it. */
+export interface ToolExecution {
+  readonly name: string
+  readonly arguments: unknown
+  readonly signal?: AbortSignal
+}
+
+/** A `tools/pre-execute` ruling. */
+export type PreToolDecision =
+  | { kind: 'allow' }
+  | { kind: 'deny'; reason: string }
+  | { kind: 'cancel' }
+  | { kind: 'ask'; reason?: string; displayReason?: InstallGateText }
+
 /** The Cordis context members the Host half uses. */
 export interface HostContext {
-  readonly pluginManager: { registerInstallGate(gate: InstallGate): () => void }
-  readonly profileContext: { readonly dir: string }
+  readonly pluginManager: PluginManager
+  readonly profileContext: { readonly dir: string; readonly cwd?: string; readonly packageManager?: PnpmInvocation }
   readonly logger: { warn(...args: unknown[]): void; info(...args: unknown[]): void }
   readonly reflect: { provide(name: string, value: unknown): () => void }
   /** Optional services; `llm` is the model-call service when the profile mounts it. */
   get(name: 'llm'): LlmService | undefined
   effect(execute: () => () => void | Promise<void>, label?: string): void
+  /** Subscribe to a Cordis event; returns the disposer. */
+  on(name: 'tools/pre-execute', listener: (exec: ToolExecution, next: () => Promise<PreToolDecision>) => Promise<PreToolDecision>): () => void
+  on(name: 'plugin-manager/changed', listener: (change: { reason?: string }) => void): () => void
   inject(names: readonly string[], callback: (ctx: HostContext & { readonly connection: { fetch: { register(route: FetchRoute): () => void } } }) => void): void
 }

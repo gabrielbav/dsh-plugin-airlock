@@ -5,15 +5,19 @@
 import { useCallback, useEffect, useState, type ReactNode } from 'react'
 import { Button, Switch, Tag } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { AirlockConfig, AirlockScannerInfo, AirlockSettings, BuiltinScannerId, CustomScanner } from '../host/types.ts'
-import type { InstallGateSeverity } from './dsh.ts'
-import type { AirlockApi } from './rpc.ts'
-import type { AirlockT } from './SecurityScore.tsx'
+import type { InstallGateReport, InstallGateSeverity, InstallGateText } from './dsh.ts'
+import { refreshStatus } from './InstallDialog.tsx'
+import type { AirlockApi, AirlockStatus } from './rpc.ts'
+import { levelTone, SecurityScore, type AirlockT } from './SecurityScore.tsx'
 
 const SEVERITIES: readonly InstallGateSeverity[] = ['critical', 'high', 'medium', 'low', 'info']
 
 type Model = Awaited<ReturnType<AirlockApi['models']>>[number]
 
-type Loaded = { settings: AirlockSettings; effective: AirlockConfig; scanners: AirlockScannerInfo[]; models: Model[] }
+type Loaded = {
+  settings: AirlockSettings; effective: AirlockConfig; scanners: AirlockScannerInfo[]; models: Model[]
+  status: AirlockStatus; reports: InstallGateReport[]
+}
 
 /** A blank custom scanner row. */
 function blankScanner(index: number): CustomScanner {
@@ -31,17 +35,25 @@ function message(error: unknown): string {
  * @param props.t - translate seat.
  * @returns the page.
  */
-export function Settings({ view, api, t }: { readonly view: 'summary' | 'page'; readonly api: AirlockApi; readonly t: AirlockT }): ReactNode {
+export function Settings({ view, api, t, resolve }: {
+  readonly view: 'summary' | 'page'
+  readonly api: AirlockApi
+  readonly t: AirlockT
+  readonly resolve: (text: InstallGateText) => string
+}): ReactNode {
   const [loaded, setLoaded] = useState<Loaded | null>(null)
   const [draft, setDraft] = useState<AirlockSettings>({})
   const [status, setStatus] = useState<{ kind: 'error' | 'saved'; text: string } | null>(null)
   const [saving, setSaving] = useState(false)
   const [installing, setInstalling] = useState<Readonly<Record<string, string>>>({})
+  const [openReport, setOpenReport] = useState<string | null>(null)
 
   const load = useCallback(async () => {
     try {
-      const [{ settings, effective }, scanners, models] = await Promise.all([api.settings(), api.scanners(), api.models()])
-      setLoaded({ settings, effective, scanners, models })
+      const [{ settings, effective }, scanners, models, status, reports] = await Promise.all([
+        api.settings(), api.scanners(), api.models(), api.status(), api.reports().catch(() => []),
+      ])
+      setLoaded({ settings, effective, scanners, models, status, reports })
       setDraft(settings)
     } catch (error) {
       setStatus({ kind: 'error', text: t('loadFailed', { reason: message(error) }) })
@@ -53,7 +65,7 @@ export function Settings({ view, api, t }: { readonly view: 'summary' | 'page'; 
   const effective = loaded.effective
   const enabledCount = loaded.scanners.filter(scanner => scanner.enabled).length
   const missing = loaded.scanners.filter(scanner => scanner.enabled && scanner.command !== null && scanner.executable === null).length
-  const summary = t('settingsSummary', { enabled: String(enabledCount), total: String(loaded.scanners.length), missing: String(missing) })
+  const summary = `${t(loaded.status.mode === 'full' ? 'modeFull' : 'modeStandard')} · ${t('settingsSummary', { enabled: String(enabledCount), total: String(loaded.scanners.length), missing: String(missing) })}`
   if (view === 'summary') return summary
 
   const policy = { ...effective.policy, ...draft.policy }
@@ -69,13 +81,17 @@ export function Settings({ view, api, t }: { readonly view: 'summary' | 'page'; 
   }
   const setPolicy = (patch: NonNullable<AirlockSettings['policy']>): void => { setDraft({ ...draft, policy: { ...draft.policy, ...patch } }) }
   const setLlm = (patch: NonNullable<AirlockSettings['llm']>): void => { setDraft({ ...draft, llm: { ...draft.llm, ...patch } }) }
+  const enforcement = { ...effective.enforcement, ...draft.enforcement }
+  const setEnforcement = (patch: NonNullable<AirlockSettings['enforcement']>): void => { setDraft({ ...draft, enforcement: { ...draft.enforcement, ...patch } }) }
+  const tier = loaded.status
 
   const save = async (): Promise<void> => {
     setSaving(true)
     setStatus(null)
     try {
       const { settings, effective: next } = await api.saveSettings(draft)
-      setLoaded({ ...loaded, settings, effective: next, scanners: await api.scanners() })
+      await refreshStatus(api)
+      setLoaded({ ...loaded, settings, effective: next, scanners: await api.scanners(), status: await api.status() })
       setDraft(settings)
       setStatus({ kind: 'saved', text: t('saved') })
     } catch (error) {
@@ -231,9 +247,56 @@ export function Settings({ view, api, t }: { readonly view: 'summary' | 'page'; 
         <p className="airlock-meta">{t('llmHint')}</p>
       </section>
 
-      <section className="airlock-block">
+      <section className="airlock-block" data-airlock-mode={tier.mode}>
         <h4 className="airlock-block-title">{t('enforcementHeading')}</h4>
-        <p className="airlock-meta">{t('enforcementHint')}</p>
+        <div className="airlock-switch-row">
+          <span>{t(tier.mode === 'full' ? 'modeFull' : 'modeStandard')}</span>
+          <Tag tone={tier.mode === 'full' ? 'success' : 'info'}>{t(tier.hookAvailable ? 'hookPresent' : 'hookMissing')}</Tag>
+        </div>
+        <p className="airlock-meta">{t(tier.mode === 'full' ? 'enforcementFull' : tier.hookAvailable ? 'enforcementHookOff' : 'enforcementStandard')}</p>
+        {tier.mode === 'standard'
+          ? (
+            <ul className="airlock-reasons">
+              <li>{t('coverageChat')}</li>
+              <li>{t('coverageMenu')}</li>
+              <li>{t('coverageAudit')}</li>
+            </ul>
+          )
+          : null}
+        {tier.hookAvailable
+          ? switchRow(enforcement.useInstallGate, next => { setEnforcement({ useInstallGate: next }) }, t('useInstallGate'))
+          : <p className="airlock-meta">{t('hookUpgrade')} <a href={tier.hookUrl} target="_blank" rel="noreferrer">{t('hookLink')}</a></p>}
+        <label className="airlock-field">
+          <span>{t('unscannedLabel')}</span>
+          <select value={enforcement.unscanned} onChange={(event) => { setEnforcement({ unscanned: event.currentTarget.value === 'flag' ? 'flag' : 'disable' }) }}>
+            <option value="disable">{t('unscannedDisable')}</option>
+            <option value="flag">{t('unscannedFlag')}</option>
+          </select>
+        </label>
+        {tier.hookAvailable ? <p className="airlock-meta">{t('enforcementHint')}</p> : null}
+      </section>
+
+      <section className="airlock-block">
+        <h4 className="airlock-block-title">{t('recentHeading')}</h4>
+        {loaded.reports.length === 0 ? <p className="airlock-meta">{t('recentNone')}</p> : (
+          <ul className="airlock-scanner-rows">
+            {loaded.reports.slice(0, 20).map((report) => {
+              const key = `${report.packageName ?? report.spec}@${report.version ?? ''}`
+              return (
+                <li key={key} className="airlock-recent" data-recent={report.packageName}>
+                  <button type="button" className="airlock-recent-head" aria-expanded={openReport === key} onClick={() => { setOpenReport(openReport === key ? null : key) }}>
+                    <strong>{report.packageName ?? report.spec}{report.version === undefined ? '' : `@${report.version}`}</strong>
+                    <Tag tone={levelTone(report.level)}>{t('badge', { score: String(report.score ?? '—') })}</Tag>
+                    <span className="airlock-meta">{t('scannedAt', { time: new Date(report.checkedAt).toLocaleString() })}</span>
+                  </button>
+                  {openReport === key
+                    ? <SecurityScore report={report} outcome="installed" summaryText={t('recentSummary')} t={t} resolve={resolve} />
+                    : null}
+                </li>
+              )
+            })}
+          </ul>
+        )}
       </section>
 
       <div className="airlock-save">

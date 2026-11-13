@@ -69,6 +69,14 @@ export interface AirlockLlmConfig {
   readonly model: string
 }
 
+/** What Airlock does about installs it did not vet, and whether it uses the install-gate hook. */
+export interface AirlockEnforcement {
+  /** Vet installs through the install-gate hook when the DSH has it. Off, Airlock works as on stock DSH. */
+  readonly useInstallGate: boolean
+  /** What happens to a third-party bundle that installed without a scan: switched off, or only flagged. */
+  readonly unscanned: 'disable' | 'flag'
+}
+
 /** Effective configuration: Cordis config with the person's saved settings applied on top. */
 export interface AirlockConfig {
   readonly scanners: Readonly<Record<BuiltinScannerId, ScannerConfig>>
@@ -85,6 +93,9 @@ export interface AirlockConfig {
   readonly installCommands: Readonly<Record<BuiltinScannerId, readonly string[]>>
   /** Bound on one scanner installation, in milliseconds. */
   readonly installTimeoutMs: number
+  readonly enforcement: AirlockEnforcement
+  /** Bound on Airlock's own quarantine fetch on a DSH without the install-gate hook, in milliseconds. */
+  readonly fetchTimeoutMs: number
 }
 
 /** What a person can change on the settings page; saved beside the profile and applied over the Cordis config. */
@@ -93,6 +104,7 @@ export interface AirlockSettings {
   readonly custom?: readonly CustomScanner[]
   readonly policy?: Partial<Omit<AirlockPolicy, 'weights'>>
   readonly llm?: Partial<AirlockLlmConfig>
+  readonly enforcement?: Partial<AirlockEnforcement>
 }
 
 /** One scanner's raw outcome before scoring. */

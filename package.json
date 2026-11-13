@@ -1,6 +1,6 @@
 {
   "name": "dsh-plugin-airlock",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Security score for every DeepSeek Harness plugin, skill and subagent: quarantine, six security scanners and an optional LLM judge check each package before it installs",
   "license": "MIT",
   "repository": {
@@ -65,7 +65,8 @@
       "inject": [
         "@deepseek-ai/dsh-client-ui-renderer",
         "@deepseek-ai/dsh-client-locale",
-        "@deepseek-ai/dsh-client-ui-plugin-manager"
+        "@deepseek-ai/dsh-client-ui-plugin-manager",
+        "@deepseek-ai/dsh-client-ui-layout"
       ]
     }
   },

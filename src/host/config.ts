@@ -51,6 +51,8 @@ export const DEFAULT_CONFIG: AirlockConfig = {
     'gitleaks': ['brew', 'install', 'gitleaks'],
   },
   installTimeoutMs: 900000,
+  enforcement: { useInstallGate: true, unscanned: 'disable' },
+  fetchTimeoutMs: 600000,
 }
 
 /** A validation failure naming the path it found. */
@@ -97,6 +99,9 @@ function strings(value: unknown, fallback: readonly string[], path: string): rea
   return value as string[]
 }
 
+/** Top-level fields of saved settings; the same fields are accepted on the `cordis.yml` row. */
+const SETTING_KEYS = ['scanners', 'custom', 'policy', 'llm', 'enforcement']
+
 /** Custom scanner ids: lower-case words that cannot shadow a built-in. */
 const CUSTOM_ID = /^[a-z0-9][a-z0-9-]{0,39}$/
 
@@ -130,10 +135,11 @@ function custom(value: unknown, path: string): CustomScanner[] {
  */
 export function parseSettings(value: unknown): AirlockSettings {
   const raw = object(value, 'settings')
-  for (const key of Object.keys(raw)) if (!['scanners', 'custom', 'policy', 'llm'].includes(key)) throw new ConfigError(key, 'unknown setting')
+  for (const key of Object.keys(raw)) if (!SETTING_KEYS.includes(key)) throw new ConfigError(key, 'unknown setting')
   const scanners = object(raw.scanners, 'scanners')
   const policy = object(raw.policy, 'policy')
   const llm = object(raw.llm, 'llm')
+  const enforcement = object(raw.enforcement, 'enforcement')
   const parsedScanners: Partial<Record<BuiltinScannerId, Partial<ScannerConfig>>> = {}
   for (const [id, entry] of Object.entries(scanners)) {
     if (!(BUILTIN_SCANNERS as readonly string[]).includes(id)) throw new ConfigError(`scanners.${id}`, 'unknown scanner')
@@ -162,6 +168,13 @@ export function parseSettings(value: unknown): AirlockSettings {
       ...pick(llm, 'provider', value => str(value, '', 'llm.provider')),
       ...pick(llm, 'model', value => str(value, '', 'llm.model')),
     },
+    enforcement: {
+      ...pick(enforcement, 'useInstallGate', value => bool(value, true, 'enforcement.useInstallGate')),
+      ...pick(enforcement, 'unscanned', (value) => {
+        if (value !== 'disable' && value !== 'flag') throw new ConfigError('enforcement.unscanned', 'expected disable or flag')
+        return value
+      }),
+    },
   }
 }
 
@@ -173,7 +186,7 @@ export function parseSettings(value: unknown): AirlockSettings {
  */
 export function parseConfig(value: unknown): AirlockConfig {
   const raw = object(value, 'config')
-  const settings = parseSettings(Object.fromEntries(Object.entries(raw).filter(([key]) => ['scanners', 'custom', 'policy', 'llm'].includes(key))))
+  const settings = parseSettings(Object.fromEntries(Object.entries(raw).filter(([key]) => SETTING_KEYS.includes(key))))
   const base = applySettings(DEFAULT_CONFIG, settings)
   const weights = object(object(raw.policy, 'policy').weights, 'policy.weights')
   const installs = object(raw.installCommands, 'installCommands')
@@ -185,6 +198,7 @@ export function parseConfig(value: unknown): AirlockConfig {
     promptMinChars: num(raw.promptMinChars, DEFAULT_CONFIG.promptMinChars, 'promptMinChars', 1),
     maxJsonBytes: num(raw.maxJsonBytes, DEFAULT_CONFIG.maxJsonBytes, 'maxJsonBytes', 1),
     installTimeoutMs: num(raw.installTimeoutMs, DEFAULT_CONFIG.installTimeoutMs, 'installTimeoutMs', 1000),
+    fetchTimeoutMs: num(raw.fetchTimeoutMs, DEFAULT_CONFIG.fetchTimeoutMs, 'fetchTimeoutMs', 1000),
     policy: {
       ...base.policy,
       weights: Object.fromEntries(SEVERITIES.map(level => [level, num(weights[level], DEFAULT_CONFIG.policy.weights[level], `policy.weights.${level}`, 0)])) as AirlockConfig['policy']['weights'],
@@ -209,6 +223,7 @@ export function applySettings(config: AirlockConfig, settings: AirlockSettings):
     custom: settings.custom ?? config.custom,
     policy,
     llm: { ...config.llm, ...settings.llm },
+    enforcement: { ...config.enforcement, ...settings.enforcement },
   }
 }
 
